@@ -2,10 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::tor::config::TorConfig;
 use crate::tor::error::{TorRuntimeValidationError, TorVerifyError};
-use crate::tor::logging::LogDest;
-use crate::tor::render::atomic_write;
+use crate::tor::torc::config::TorConfig;
+use crate::tor::torc::logging::LogDest;
+use crate::tor::torc::render::atomic_write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TorVerifyReport {

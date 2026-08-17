@@ -7,4 +7,5 @@ description = "Supervises a Tor process and hands out isolated SOCKS5 lanes"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+rand = "0.8"
 thiserror = "^2"

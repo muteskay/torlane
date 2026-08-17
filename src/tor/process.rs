@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
-use crate::tor::config::TorConfig;
 use crate::tor::error::TorProcessError;
+use crate::tor::torc::config::TorConfig;
 
 #[derive(Debug)]
 pub struct TorProcess {
@@ -27,8 +27,8 @@ impl TorProcess {
             .write_to_stdin(stdin)
             .await
             .map_err(|error| match error {
-                crate::tor::error::TorWriteError::Io(error) => TorProcessError::Io(error),
-                crate::tor::error::TorWriteError::MissingParentDirectory => {
+                crate::tor::torc::TorWriteError::Io(error) => TorProcessError::Io(error),
+                crate::tor::torc::TorWriteError::MissingParentDirectory => {
                     TorProcessError::MissingStdin
                 }
             })?;

@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
-use crate::tor::value::PortSpec;
+use crate::tor::torc::value::PortSpec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlAuth {

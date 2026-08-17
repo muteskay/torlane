@@ -1,19 +1,19 @@
 use std::path::{Path, PathBuf};
 
-use crate::tor::bridges::BridgeConfig;
-use crate::tor::circuits::CircuitConfig;
-use crate::tor::control::ControlConfig;
-use crate::tor::dormancy::DormancyConfig;
-use crate::tor::error::TorWriteError;
-use crate::tor::logging::LoggingConfig;
-use crate::tor::metrics::MetricsConfig;
-use crate::tor::network::NetworkConfig;
-use crate::tor::nodes::NodeSelectionConfig;
-use crate::tor::option::TorOption;
-use crate::tor::padding::PaddingConfig;
-use crate::tor::render;
-use crate::tor::socks::SocksConfig;
-use crate::tor::system::SystemConfig;
+use crate::tor::torc::bridges::BridgeConfig;
+use crate::tor::torc::circuits::CircuitConfig;
+use crate::tor::torc::control::ControlConfig;
+use crate::tor::torc::dormancy::DormancyConfig;
+use crate::tor::torc::error::TorWriteError;
+use crate::tor::torc::logging::LoggingConfig;
+use crate::tor::torc::metrics::MetricsConfig;
+use crate::tor::torc::network::NetworkConfig;
+use crate::tor::torc::nodes::NodeSelectionConfig;
+use crate::tor::torc::option::TorOption;
+use crate::tor::torc::padding::PaddingConfig;
+use crate::tor::torc::render;
+use crate::tor::torc::socks::SocksConfig;
+use crate::tor::torc::system::SystemConfig;
 use crate::tor::verify::{TorRuntimeValidation, TorVerifyReport};
 use crate::tor::{
     TorRuntimeValidationError, TorVerifyError, verify::validate_runtime_config,
@@ -112,7 +112,7 @@ impl TorConfig {
     }
 
     pub fn write_to_sync(&self, path: impl AsRef<Path>) -> Result<(), TorWriteError> {
-        crate::tor::render::atomic_write(path.as_ref(), &self.render())
+        crate::tor::torc::render::atomic_write(path.as_ref(), &self.render())
     }
 
     pub async fn write_to_stdin(

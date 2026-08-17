@@ -1,8 +1,8 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 
-use crate::tor::error::TorConfigError;
-use crate::tor::value::PortSpec;
+use crate::tor::torc::error::TorConfigError;
+use crate::tor::torc::value::PortSpec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Isolation {

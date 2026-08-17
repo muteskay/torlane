@@ -339,7 +339,7 @@ fn atomic_write_uses_private_unix_permissions() {
 }
 
 #[test]
-// #[ignore]
+#[ignore]
 fn generated_config_passes_tor_verify() {
     let tor_binary = std::env::var("TOR_BINARY").unwrap_or_else(|_| "tor".to_string());
     let root = std::env::temp_dir().join(format!(

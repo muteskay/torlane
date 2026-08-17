@@ -4,13 +4,13 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::tor::bridges::{Bridge, BridgeConfig};
-use crate::tor::config::TorConfig;
-use crate::tor::control::{ControlAuth, ControlListen};
-use crate::tor::error::TorWriteError;
-use crate::tor::logging::{LogDest, LoggingConfig};
-use crate::tor::socks::SocksPort;
-use crate::tor::value::{Flag, PortSpec};
+use crate::tor::torc::bridges::{Bridge, BridgeConfig};
+use crate::tor::torc::config::TorConfig;
+use crate::tor::torc::control::{ControlAuth, ControlListen};
+use crate::tor::torc::error::TorWriteError;
+use crate::tor::torc::logging::{LogDest, LoggingConfig};
+use crate::tor::torc::socks::SocksPort;
+use crate::tor::torc::value::{Flag, PortSpec};
 
 pub fn render_config(config: &TorConfig) -> String {
     let mut out = String::new();

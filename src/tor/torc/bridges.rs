@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use crate::tor::error::TorConfigError;
+use crate::tor::torc::error::TorConfigError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bridge {

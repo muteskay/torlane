@@ -1,7 +1,8 @@
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::Read;
 use std::net::SocketAddr;
+
+use rand::RngCore;
+use rand::rngs::OsRng;
 
 use crate::tor::error::TorIdentityError;
 
@@ -77,19 +78,9 @@ fn random_hex(bytes: usize) -> Result<String, TorIdentityError> {
     Ok(hex_encode(&random))
 }
 
-#[cfg(unix)]
 fn secure_random(bytes: &mut [u8]) -> Result<(), TorIdentityError> {
-    File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(bytes))
-        .map_err(TorIdentityError::Random)
-}
-
-#[cfg(not(unix))]
-fn secure_random(_bytes: &mut [u8]) -> Result<(), TorIdentityError> {
-    Err(TorIdentityError::Random(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "secure OS RNG is not implemented for this platform without dependencies",
-    )))
+    OsRng.try_fill_bytes(bytes)?;
+    Ok(())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

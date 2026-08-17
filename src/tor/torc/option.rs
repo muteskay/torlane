@@ -1,4 +1,4 @@
-use crate::tor::error::TorConfigError;
+use crate::tor::torc::error::TorConfigError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TorOption {

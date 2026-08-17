@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::tor::value::Tristate;
+use crate::tor::torc::value::Tristate;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaddingConfig {
