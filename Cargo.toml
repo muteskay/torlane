@@ -3,7 +3,8 @@ name = "torlane"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Supervises a Tor process and hands out isolated SOCKS5 lanes"
+description = "Runs a Tor process and hands out isolated SOCKS5 lanes"
+readme = "README.MD"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
