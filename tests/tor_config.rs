@@ -265,12 +265,12 @@ fn identity_pool_generates_unique_runtime_credentials() {
     let usernames: HashSet<_> = pool
         .identities()
         .iter()
-        .map(|identity| identity.auth.username.as_str())
+        .map(|identity| identity.auth.username.as_ref())
         .collect();
     let passwords: HashSet<_> = pool
         .identities()
         .iter()
-        .map(|identity| identity.auth.password.as_str())
+        .map(|identity| identity.auth.password.as_ref())
         .collect();
 
     assert_eq!(usernames.len(), 64);
@@ -279,7 +279,10 @@ fn identity_pool_generates_unique_runtime_credentials() {
     for (index, identity) in pool.identities().iter().enumerate() {
         assert_eq!(identity.id, index as u64);
         assert_eq!(identity.proxy_addr, addr);
-        assert_eq!(identity.auth.username, format!("worker-{index:06}"));
+        assert_eq!(
+            identity.auth.username.as_ref(),
+            format!("worker-{index:06}")
+        );
         assert!(!identity.auth.password.is_empty());
         assert_ne!(identity.auth.password, identity.auth.username);
     }

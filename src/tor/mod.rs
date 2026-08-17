@@ -7,11 +7,12 @@ pub mod torc;
 pub mod verify;
 pub mod version;
 
+pub use crate::pool::SocksAuth;
 pub use controller::*;
 pub use error::{
     TorIdentityError, TorProcessError, TorRuntimeValidationError, TorVerifyError, TorVersionError,
 };
-pub use identity::{SocksAuth, TorIdentity, TorIdentityPool};
+pub use identity::{TorIdentity, TorIdentityPool};
 pub use instance::*;
 pub use process::{TorConfigSource, TorProcess, write_config_to_file};
 pub use torc::*;

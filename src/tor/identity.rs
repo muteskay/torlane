@@ -1,16 +1,12 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use rand::RngCore;
 use rand::rngs::OsRng;
 
+use crate::pool::SocksAuth;
 use crate::tor::error::TorIdentityError;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SocksAuth {
-    pub username: String,
-    pub password: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TorIdentity {
@@ -48,7 +44,10 @@ impl TorIdentityPool {
             identities.push(TorIdentity {
                 id: id as u64,
                 proxy_addr,
-                auth: SocksAuth { username, password },
+                auth: SocksAuth {
+                    username: Arc::from(username),
+                    password: Arc::from(password),
+                },
             });
         }
 
