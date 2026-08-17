@@ -289,6 +289,127 @@ Log notice stdout\n"
 }
 
 #[test]
+fn comprehensive_config_writes_rendered_torrc_file() {
+    let root = std::env::temp_dir().join(format!(
+        "torlane-comprehensive-test-{}-{}",
+        std::process::id(),
+        unique_nanos()
+    ));
+    let data_dir = root.join("data");
+    let torrc = root.join("torrc");
+    let control_port_file = root.join("control.port");
+    let tor_log = root.join("logs").join("tor.log");
+    let bridge_addr: SocketAddr = "192.0.2.20:443".parse().unwrap();
+    let metrics_addr: SocketAddr = "127.0.0.1:9035".parse().unwrap();
+
+    let config = TorConfigBuilder::new(&data_dir)
+        .control(
+            ControlConfig::auto_tcp()
+                .hashed_password("16:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF")
+                .write_port_to_file(&control_port_file)
+                .owning_controller_process(4242),
+        )
+        .socks(
+            SocksConfig::new().listener(
+                SocksPort::localhost(20300)
+                    .with_flag(SocksFlag::ExtendedErrors)
+                    .with_flag(SocksFlag::PreferIPv6)
+                    .with_isolation(Isolation::IsolateSocksAuth)
+                    .with_isolation(Isolation::KeepAliveIsolateSocksAuth)
+                    .with_isolation(Isolation::SessionGroup(7)),
+            ),
+        )
+        .network(NetworkConfig::dual_stack())
+        .circuits(
+            CircuitConfig::default()
+                .max_dirtiness(Duration::from_secs(600))
+                .new_circuit_period(Duration::from_secs(45))
+                .circuits_available_timeout(Duration::from_secs(30))
+                .socks_timeout(Duration::from_secs(120))
+                .circuit_build_timeout(Duration::from_secs(60))
+                .learn_circuit_build_timeout(false)
+                .circuit_stream_timeout(Duration::from_secs(90))
+                .max_client_circuits_pending(64)
+                .num_entry_guards(3)
+                .use_entry_guards(true),
+        )
+        .padding(
+            PaddingConfig::default()
+                .connection_padding(Tristate::Auto)
+                .reduced_connection_padding(false)
+                .circuit_padding(true)
+                .reduced_circuit_padding(false)
+                .keepalive_period(Duration::from_secs(300)),
+        )
+        .dormancy(
+            DormancyConfig::default()
+                .timeout_enabled(false)
+                .on_first_startup(false)
+                .canceled_by_startup(true),
+        )
+        .bridges(
+            BridgeConfig::obfs4("/usr/bin/lyrebird").bridge(Obfs4Bridge::new(
+                bridge_addr,
+                "0123456789ABCDEF0123456789ABCDEF01234567",
+                "abc",
+                1,
+            )),
+        )
+        .node_selection(
+            NodeSelectionConfig::default()
+                .exit_nodes(["{us}", "{de}"])
+                .exclude_exit_nodes(["{ru}"])
+                .strict_nodes(true),
+        )
+        .system(
+            SystemConfig::default()
+                .avoid_disk_writes(true)
+                .hardware_accel(true)
+                .conn_limit(4096)
+                .disable_debugger_attachment(true),
+        )
+        .logging(
+            LoggingConfig::default()
+                .log(Severity::Notice, LogDest::Stdout)
+                .log(Severity::Warn, LogDest::File(tor_log.clone()))
+                .safe_logging(true)
+                .syslog_identity_tag("torlane-test"),
+        )
+        .metrics(MetricsConfig::prometheus(metrics_addr).policy(["accept 127.0.0.1"]))
+        .raw_option(TorOption::new("UseMicrodescriptors", "1").unwrap())
+        .build()
+        .unwrap();
+
+    config.write_to_sync(&torrc).unwrap();
+
+    let saved = fs::read_to_string(&torrc).unwrap();
+    assert_eq!(saved, config.render());
+    assert!(saved.contains(&format!("DataDirectory {}\n", data_dir.display())));
+    assert!(saved.contains("ControlPort 127.0.0.1:auto\n"));
+    assert!(saved.contains(&format!(
+        "ControlPortWriteToFile {}\n",
+        control_port_file.display()
+    )));
+    assert!(saved.contains(
+        "SocksPort 127.0.0.1:20300 ExtendedErrors PreferIPv6 IsolateSOCKSAuth KeepAliveIsolateSOCKSAuth SessionGroup=7\n"
+    ));
+    assert!(saved.contains("ClientUseIPv4 1\n"));
+    assert!(saved.contains("MaxCircuitDirtiness 600\n"));
+    assert!(saved.contains("ConnectionPadding auto\n"));
+    assert!(saved.contains("DormantCanceledByStartup 1\n"));
+    assert!(saved.contains(
+        "Bridge obfs4 192.0.2.20:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=abc iat-mode=1\n"
+    ));
+    assert!(saved.contains("ExitNodes {us},{de}\n"));
+    assert!(saved.contains("AvoidDiskWrites 1\n"));
+    assert!(saved.contains(&format!("Log warn file {}\n", tor_log.display())));
+    assert!(saved.contains("MetricsPortPolicy accept 127.0.0.1\n"));
+    assert!(saved.contains("UseMicrodescriptors 1\n"));
+
+    // let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn advanced_circuit_and_metrics_render() {
     let metrics_addr: SocketAddr = "127.0.0.1:9035".parse().unwrap();
     let config = TorConfigBuilder::new("/tmp/tor/data")
@@ -339,7 +460,6 @@ fn atomic_write_uses_private_unix_permissions() {
 }
 
 #[test]
-#[ignore]
 fn generated_config_passes_tor_verify() {
     let tor_binary = std::env::var("TOR_BINARY").unwrap_or_else(|_| "tor".to_string());
     let root = std::env::temp_dir().join(format!(
