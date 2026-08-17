@@ -319,6 +319,8 @@ mod tests {
         let mut permissions = fs::metadata(&script).unwrap().permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&script, permissions).unwrap();
+        fs::File::open(&script).unwrap().sync_all().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
         script
     }
 

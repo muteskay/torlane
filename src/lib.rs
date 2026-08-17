@@ -2,7 +2,8 @@ pub mod pool;
 pub mod tor;
 
 pub use pool::{
-    Lane, LaneEndpoint, LaneError, LaneId, LaneState, PoolConfig, PoolConfigError, RestartBackoff,
-    generate_lane_auth, rotate_lane,
+    InstanceSnapshot, Lane, LaneEndpoint, LaneError, LaneId, LaneSnapshot, LaneState, Pool,
+    PoolBuilder, PoolConfig, PoolConfigError, PoolError, PoolSnapshot, Proxy, ReadySnapshot,
+    RestartBackoff, generate_lane_auth, rotate_lane,
 };
 pub use tor::*;

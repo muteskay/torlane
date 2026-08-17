@@ -9,7 +9,60 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
-use torlane::{InstanceConfig, InstanceId, TorControlError, TorInstance, TorInstanceError};
+use torlane::{InstanceConfig, InstanceId, Pool, TorControlError, TorInstance, TorInstanceError};
+
+#[tokio::test]
+async fn pool_builder_starts_instance_and_creates_requested_lanes() {
+    if !python_available() {
+        return;
+    }
+
+    let root = temp_root("pool");
+    fs::create_dir_all(&root).unwrap();
+    let pid_file = root.join("fake-tor.pid");
+    let captured_config = root.join("captured.torrc");
+    let tor_binary = fake_tor(&root, &pid_file, &captured_config, "success");
+
+    let pool = Pool::builder()
+        .tor_binary(&tor_binary)
+        .work_dir(root.join("instance"))
+        .lanes(4)
+        .bootstrap_timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .unwrap();
+
+    let snapshot = pool.snapshot();
+    assert_eq!(snapshot.lanes.len(), 4);
+    assert_eq!(snapshot.ready_lane_count, 4);
+    assert_eq!(snapshot.instance.generation, 1);
+    assert_eq!(snapshot.instance.restart_count, 0);
+    assert_eq!(
+        (0..6)
+            .map(|_| pool.next_proxy().unwrap().lane())
+            .collect::<Vec<_>>(),
+        vec![
+            torlane::LaneId(0),
+            torlane::LaneId(1),
+            torlane::LaneId(2),
+            torlane::LaneId(3),
+            torlane::LaneId(0),
+            torlane::LaneId(1),
+        ]
+    );
+
+    pool.restart().await.unwrap();
+    let restarted = pool.snapshot();
+    assert_eq!(restarted.instance.generation, 2);
+    assert_eq!(restarted.instance.restart_count, 1);
+    assert!(restarted.lanes.iter().all(|lane| lane.epoch == 2));
+    assert_eq!(restarted.ready_lane_count, 4);
+
+    let pid = read_pid(&pid_file).await;
+    pool.shutdown().await.unwrap();
+    wait_for_process_exit(pid).await;
+    fs::remove_dir_all(root).unwrap();
+}
 
 #[tokio::test]
 async fn instance_starts_with_auto_ports_and_exposes_working_socks_endpoint() {

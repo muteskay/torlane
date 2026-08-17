@@ -197,9 +197,6 @@ fn pool_builder_defaults_to_stdin_config_source() {
     let builder = Pool::builder();
 
     assert_eq!(builder.config_source(), &TorConfigSource::Stdin);
-
-    let pool = builder.build();
-    assert_eq!(pool.config_source(), &TorConfigSource::Stdin);
 }
 
 #[test]
@@ -211,9 +208,6 @@ fn pool_builder_torrc_file_switches_to_file_config_source() {
         builder.config_source(),
         &TorConfigSource::File(torrc.clone())
     );
-
-    let pool = builder.build();
-    assert_eq!(pool.config_source(), &TorConfigSource::File(torrc));
 }
 
 #[cfg(unix)]
