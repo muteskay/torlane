@@ -14,11 +14,19 @@ pub struct TorVersion {
 pub async fn detect_tor_version(
     tor_binary: impl AsRef<Path>,
 ) -> Result<TorVersion, TorVersionError> {
-    detect_tor_version_sync(tor_binary.as_ref())
+    let output = tokio::process::Command::new(tor_binary.as_ref())
+        .arg("--version")
+        .output()
+        .await?;
+    version_from_output(output)
 }
 
 pub fn detect_tor_version_sync(tor_binary: &Path) -> Result<TorVersion, TorVersionError> {
     let output = Command::new(tor_binary).arg("--version").output()?;
+    version_from_output(output)
+}
+
+fn version_from_output(output: std::process::Output) -> Result<TorVersion, TorVersionError> {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
