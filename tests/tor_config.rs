@@ -406,7 +406,7 @@ fn comprehensive_config_writes_rendered_torrc_file() {
     assert!(saved.contains("MetricsPortPolicy accept 127.0.0.1\n"));
     assert!(saved.contains("UseMicrodescriptors 1\n"));
 
-    // let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
