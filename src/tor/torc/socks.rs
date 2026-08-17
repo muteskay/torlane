@@ -86,11 +86,15 @@ impl SocksPort {
         }
     }
 
-    pub fn isolated_auth(port: u16) -> Self {
+    pub fn isolated_auth(port: impl Into<PortSpec>) -> Self {
         Self::localhost(port)
             .with_flag(SocksFlag::ExtendedErrors)
             .with_isolation(Isolation::IsolateSocksAuth)
             .with_isolation(Isolation::KeepAliveIsolateSocksAuth)
+    }
+
+    pub fn isolated_auth_auto() -> Self {
+        Self::isolated_auth(PortSpec::Auto)
     }
 
     pub fn bind(mut self, addr: IpAddr) -> Self {
@@ -133,8 +137,12 @@ impl SocksConfig {
         Self::none()
     }
 
-    pub fn isolated_auth(port: u16) -> Self {
+    pub fn isolated_auth(port: impl Into<PortSpec>) -> Self {
         Self::new().listener(SocksPort::isolated_auth(port))
+    }
+
+    pub fn isolated_auth_auto() -> Self {
+        Self::new().listener(SocksPort::isolated_auth_auto())
     }
 
     pub fn port_range(start_port: u16, count: u16) -> Self {

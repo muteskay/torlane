@@ -1,13 +1,9 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::tor::torc::bridges::{Bridge, BridgeConfig};
 use crate::tor::torc::config::TorConfig;
 use crate::tor::torc::control::{ControlAuth, ControlListen};
-use crate::tor::torc::error::TorWriteError;
 use crate::tor::torc::logging::{LogDest, LoggingConfig};
 use crate::tor::torc::socks::SocksPort;
 use crate::tor::torc::value::{Flag, PortSpec};
@@ -207,21 +203,6 @@ pub fn render_config(config: &TorConfig) -> String {
     out
 }
 
-pub fn atomic_write(path: &Path, content: &str) -> Result<(), TorWriteError> {
-    let parent = path.parent().ok_or(TorWriteError::MissingParentDirectory)?;
-    fs::create_dir_all(parent)?;
-
-    let temp_path = temp_path(parent, path);
-    let mut file = create_private_file(&temp_path)?;
-    file.write_all(content.as_bytes())?;
-    file.flush()?;
-    file.sync_all()?;
-    drop(file);
-
-    fs::rename(&temp_path, path)?;
-    Ok(())
-}
-
 fn section(out: &mut String, name: &str, lines: Vec<String>) {
     if lines.is_empty() {
         return;
@@ -331,35 +312,6 @@ fn render_logging(logging: &LoggingConfig) -> Vec<String> {
     }
 
     lines
-}
-
-fn temp_path(parent: &Path, destination: &Path) -> PathBuf {
-    let name = destination
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("torrc");
-    let pid = std::process::id();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    parent.join(format!(".{name}.{pid}.{nanos}.tmp"))
-}
-
-#[cfg(unix)]
-fn create_private_file(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn create_private_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new().write(true).create_new(true).open(path)
 }
 
 #[allow(dead_code)]

@@ -4,7 +4,7 @@ use crate::tor::torc::TorWriteError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TorVerifyError {
-    #[error("failed to write temporary torrc for verification: {0}")]
+    #[error("failed to write torrc for verification: {0}")]
     Write(#[from] TorWriteError),
 
     #[error("failed to execute tor: {0}")]
@@ -55,6 +55,9 @@ pub enum TorIdentityError {
 pub enum TorProcessError {
     #[error("failed to start tor process: {0}")]
     Io(#[from] io::Error),
+
+    #[error("failed to write torrc for tor process: {0}")]
+    Write(#[from] TorWriteError),
 
     #[error("tor child stdin was not available")]
     MissingStdin,

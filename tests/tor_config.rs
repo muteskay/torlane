@@ -120,6 +120,19 @@ fn socks_isolated_auth_renders_one_listener() {
 }
 
 #[test]
+fn socks_isolated_auth_auto_renders_auto_listener() {
+    let config = TorConfigBuilder::new("/tmp/tor/data")
+        .socks(SocksConfig::isolated_auth_auto())
+        .build()
+        .unwrap();
+
+    assert_eq!(config.socks().listeners().len(), 1);
+    assert!(config.render().contains(
+        "SocksPort 127.0.0.1:auto ExtendedErrors IsolateSOCKSAuth KeepAliveIsolateSOCKSAuth\n"
+    ));
+}
+
+#[test]
 fn socks_port_range_validates_count_and_overflow() {
     let range = SocksConfig::port_range(20300, 64);
     assert_eq!(range.listeners().len(), 64);
@@ -135,6 +148,102 @@ fn socks_port_range_validates_count_and_overflow() {
         .build()
         .unwrap_err();
     assert_eq!(error, TorConfigError::PortRangeOverflow);
+}
+
+#[test]
+fn runtime_config_owns_pool_topology() {
+    let root = std::env::temp_dir().join(format!(
+        "torlane-runtime-config-{}-{}",
+        std::process::id(),
+        unique_nanos()
+    ));
+    let layout = InstanceLayout::prepare(&root).unwrap();
+    let policy = TorPolicy {
+        network: NetworkConfig::dual_stack(),
+        logging: LoggingConfig::default().log(Severity::Notice, LogDest::Stdout),
+        system: SystemConfig::default().avoid_disk_writes(true),
+        ..TorPolicy::default()
+    };
+
+    let config = build_runtime_config(&policy, &layout, 4242).unwrap();
+    let rendered = config.render();
+
+    assert_eq!(count_rendered_options(&rendered, "SocksPort"), 1);
+    assert!(rendered.contains("SocksPort 127.0.0.1:auto "));
+    assert!(rendered.contains("ExtendedErrors"));
+    assert!(rendered.contains("IsolateSOCKSAuth"));
+    assert!(rendered.contains("KeepAliveIsolateSOCKSAuth"));
+    assert_eq!(count_rendered_options(&rendered, "ControlPort"), 1);
+    assert!(rendered.contains("ControlPort 127.0.0.1:auto\n"));
+    assert!(rendered.contains(&format!(
+        "ControlPortWriteToFile {}\n",
+        layout.control_port_file.display()
+    )));
+    assert!(rendered.contains("CookieAuthentication 1\n"));
+    assert!(rendered.contains("__OwningControllerProcess 4242\n"));
+    assert!(rendered.contains(&format!("DataDirectory {}\n", layout.data_dir.display())));
+    assert!(rendered.contains("ClientUseIPv6 1\n"));
+    assert!(rendered.contains("AvoidDiskWrites 1\n"));
+    assert!(rendered.contains("Log notice stdout\n"));
+    assert!(!rendered.contains("/tmp/tor/data"));
+    assert!(!rendered.contains("127.0.0.1:20300"));
+    assert!(!root.join("torrc").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn pool_builder_defaults_to_stdin_config_source() {
+    let builder = Pool::builder();
+
+    assert_eq!(builder.config_source(), &TorConfigSource::Stdin);
+
+    let pool = builder.build();
+    assert_eq!(pool.config_source(), &TorConfigSource::Stdin);
+}
+
+#[test]
+fn pool_builder_torrc_file_switches_to_file_config_source() {
+    let torrc = std::env::temp_dir().join("torlane-pool-builder.torrc");
+    let builder = Pool::builder().torrc_file(&torrc);
+
+    assert_eq!(
+        builder.config_source(),
+        &TorConfigSource::File(torrc.clone())
+    );
+
+    let pool = builder.build();
+    assert_eq!(pool.config_source(), &TorConfigSource::File(torrc));
+}
+
+#[cfg(unix)]
+#[test]
+fn instance_layout_creates_private_runtime_directories() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = std::env::temp_dir().join(format!(
+        "torlane-layout-{}-{}",
+        std::process::id(),
+        unique_nanos()
+    ));
+    let stale_root = root.join("runtime");
+    fs::create_dir_all(&stale_root).unwrap();
+    let stale_port_file = stale_root.join("control.port");
+    fs::write(&stale_port_file, b"stale").unwrap();
+
+    let layout = InstanceLayout::prepare(&root).unwrap();
+
+    assert_eq!(layout.data_dir, root.join("data"));
+    assert_eq!(layout.runtime_dir, root.join("runtime"));
+    assert_eq!(layout.control_port_file, root.join("runtime/control.port"));
+    assert!(!layout.control_port_file.exists());
+
+    for path in [&layout.root, &layout.data_dir, &layout.runtime_dir] {
+        let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -380,7 +489,7 @@ fn comprehensive_config_writes_rendered_torrc_file() {
         .build()
         .unwrap();
 
-    config.write_to_sync(&torrc).unwrap();
+    write_config_to_file(&config, &torrc).unwrap();
 
     let saved = fs::read_to_string(&torrc).unwrap();
     assert_eq!(saved, config.render());
@@ -451,7 +560,7 @@ fn atomic_write_uses_private_unix_permissions() {
         .socks(SocksConfig::isolated_auth(20300))
         .build()
         .unwrap();
-    config.write_to_sync(&path).unwrap();
+    write_config_to_file(&config, &path).unwrap();
 
     let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
@@ -468,7 +577,6 @@ fn generated_config_passes_tor_verify() {
         unique_nanos()
     ));
     let data_dir = root.join("data");
-    let torrc = root.join("torrc");
     fs::create_dir_all(&root).unwrap();
 
     let config = TorConfigBuilder::scraper(&data_dir)
@@ -481,21 +589,9 @@ fn generated_config_passes_tor_verify() {
         .logging(LoggingConfig::default().log(Severity::Notice, LogDest::Stdout))
         .build()
         .unwrap();
-    config.write_to_sync(&torrc).unwrap();
 
-    let output = std::process::Command::new(tor_binary)
-        .arg("-f")
-        .arg(&torrc)
-        .arg("--verify-config")
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    verify_config_with(&config, std::path::Path::new(&tor_binary)).unwrap();
+    assert!(!root.join("torrc").exists());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -505,4 +601,12 @@ fn unique_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default()
+}
+
+fn count_rendered_options(rendered: &str, option: &str) -> usize {
+    let prefix = format!("{option} ");
+    rendered
+        .lines()
+        .filter(|line| line.starts_with(&prefix))
+        .count()
 }
