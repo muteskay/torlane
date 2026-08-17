@@ -355,8 +355,7 @@ while True:
                      '250-VERSION Tor="0.4.9.11"\r\n'
                      '250 OK\r\n')
         elif command in ('AUTHENTICATE', 'TAKEOWNERSHIP',
-                         'RESETCONF __OwningControllerProcess',
-                         'SETEVENTS STATUS_CLIENT'):
+                         'RESETCONF __OwningControllerProcess'):
             reply = '250 OK\r\n'
         elif command == 'GETINFO status/bootstrap-phase':
             reply = ('250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY="Done"\r\n'

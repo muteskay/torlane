@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::pool::{Pool, PoolConfig, PoolError, RestartBackoff};
+use crate::pool::{Pool, PoolConfig, PoolError};
 use crate::tor::instance::{InstanceConfig, InstanceId, TorInstance, TorPolicy};
 use crate::tor::process::TorConfigSource;
 
@@ -52,11 +52,6 @@ impl PoolBuilder {
 
     pub fn bootstrap_timeout(mut self, timeout: Duration) -> Self {
         self.pool_config.bootstrap_timeout = timeout;
-        self
-    }
-
-    pub fn restart_backoff(mut self, backoff: RestartBackoff) -> Self {
-        self.pool_config.restart_backoff = backoff;
         self
     }
 

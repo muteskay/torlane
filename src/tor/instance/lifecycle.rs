@@ -138,10 +138,7 @@ impl TorInstance {
         let control_addr =
             wait_control_port_file(&layout.control_port_file, config.control_port_timeout).await?;
         let controller = ControlClient::connect(control_addr).await?;
-        let protocol = controller.protocol_info().await?;
-        controller.authenticate(&protocol).await?;
-        controller.take_ownership().await?;
-        controller.enable_bootstrap_events().await?;
+        controller.authenticate_and_take_ownership().await?;
         controller.wait_bootstrap(config.bootstrap_timeout).await?;
         let socks_addr = controller.socks_listener().await?;
         Ok((controller, socks_addr))

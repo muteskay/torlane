@@ -5,7 +5,7 @@ use rand::RngCore;
 use sha2::Sha256;
 
 use super::client::ControlClient;
-use super::events::{control_words, field};
+use super::client::{control_words, field};
 use super::{ControlLine, ProtocolInfo, TorControlError};
 
 const SERVER_HASH_KEY: &[u8] = b"Tor safe cookie authentication server-to-controller hash";

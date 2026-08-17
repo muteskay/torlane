@@ -4,16 +4,19 @@ use std::time::Duration;
 
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, tcp::OwnedWriteHalf};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use super::auth::AuthMethod;
 use super::codec::read_reply;
-use super::command::ControlCommand;
-use super::events::{control_words, field, parse_bootstrap_reply, parse_event};
-use super::{ControlLine, ControlReply, TorControlError, TorEvent};
+use super::{ControlLine, ControlReply, TorControlError};
 
 const COMMAND_BUFFER: usize = 32;
-const EVENT_BUFFER: usize = 128;
+const BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+struct ControlCommand {
+    command: String,
+    response: oneshot::Sender<Result<ControlReply, TorControlError>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtocolInfo {
@@ -25,7 +28,6 @@ pub struct ProtocolInfo {
 #[derive(Clone)]
 pub struct ControlClient {
     tx: mpsc::Sender<ControlCommand>,
-    events: broadcast::Sender<TorEvent>,
 }
 
 impl ControlClient {
@@ -37,18 +39,10 @@ impl ControlClient {
     pub fn from_stream(stream: TcpStream) -> Self {
         let (read_half, write_half) = stream.into_split();
         let (tx, commands) = mpsc::channel(COMMAND_BUFFER);
-        let (events, _) = broadcast::channel(EVENT_BUFFER);
-        let actor_events = events.clone();
         tokio::spawn(async move {
-            run_actor(
-                BufReader::new(read_half),
-                write_half,
-                commands,
-                actor_events,
-            )
-            .await;
+            run_actor(BufReader::new(read_half), write_half, commands).await;
         });
-        Self { tx, events }
+        Self { tx }
     }
 
     pub async fn command(
@@ -65,10 +59,6 @@ impl ControlClient {
             .await
             .map_err(|_| TorControlError::ChannelClosed)?;
         receiver.await.map_err(|_| TorControlError::ChannelClosed)?
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<TorEvent> {
-        self.events.subscribe()
     }
 
     pub async fn protocol_info(&self) -> Result<ProtocolInfo, TorControlError> {
@@ -90,29 +80,16 @@ impl ControlClient {
         Ok(())
     }
 
-    pub async fn enable_bootstrap_events(&self) -> Result<(), TorControlError> {
-        self.command_success("SETEVENTS STATUS_CLIENT").await?;
-        Ok(())
-    }
-
     pub async fn wait_bootstrap(&self, wait_for: Duration) -> Result<(), TorControlError> {
-        let mut events = self.subscribe();
         let wait = async {
-            let current = self
-                .command_success("GETINFO status/bootstrap-phase")
-                .await?;
-            if parse_bootstrap_reply(&current).is_some_and(|event| event.progress == 100) {
-                return Ok(());
-            }
-
             loop {
-                match events.recv().await {
-                    Ok(TorEvent::Bootstrap(event)) if event.progress == 100 => return Ok(()),
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(TorControlError::ChannelClosed);
-                    }
+                let current = self
+                    .command_success("GETINFO status/bootstrap-phase")
+                    .await?;
+                if bootstrap_progress(&current) == Some(100) {
+                    return Ok(());
                 }
+                tokio::time::sleep(BOOTSTRAP_POLL_INTERVAL).await;
             }
         };
 
@@ -164,72 +141,41 @@ impl ControlClient {
 }
 
 async fn run_actor<R>(
-    reader: R,
+    mut reader: R,
     mut writer: OwnedWriteHalf,
     mut commands: mpsc::Receiver<ControlCommand>,
-    events: broadcast::Sender<TorEvent>,
 ) where
     R: tokio::io::AsyncBufRead + Unpin + Send + 'static,
 {
-    let (replies_tx, mut replies) = mpsc::channel(16);
-    let reader_task = tokio::spawn(async move {
-        let mut reader = reader;
-        loop {
-            let result = read_reply(&mut reader).await;
-            let finished = result.as_ref().is_err() || matches!(result, Ok(None));
-            if replies_tx.send(result).await.is_err() || finished {
-                break;
-            }
+    while let Some(command) = commands.recv().await {
+        let result = async {
+            writer.write_all(command.command.as_bytes()).await?;
+            writer.write_all(b"\r\n").await?;
+            writer.flush().await?;
+            read_reply(&mut reader)
+                .await?
+                .ok_or(TorControlError::ChannelClosed)
         }
-    });
-
-    let mut pending: Option<oneshot::Sender<Result<ControlReply, TorControlError>>> = None;
-    loop {
-        tokio::select! {
-            command = commands.recv(), if pending.is_none() => {
-                let Some(command) = command else { break };
-                if let Err(error) = writer.write_all(command.command.as_bytes()).await {
-                    let _ = command.response.send(Err(error.into()));
-                    break;
-                }
-                if let Err(error) = writer.write_all(b"\r\n").await {
-                    let _ = command.response.send(Err(error.into()));
-                    break;
-                }
-                if let Err(error) = writer.flush().await {
-                    let _ = command.response.send(Err(error.into()));
-                    break;
-                }
-                pending = Some(command.response);
-            }
-            reply = replies.recv() => {
-                match reply {
-                    Some(Ok(Some(reply))) if reply.code == 650 => {
-                        let _ = events.send(parse_event(reply));
-                    }
-                    Some(Ok(Some(reply))) => {
-                        if let Some(response) = pending.take() {
-                            let _ = response.send(Ok(reply));
-                        }
-                    }
-                    Some(Ok(None)) => {
-                        if let Some(response) = pending.take() {
-                            let _ = response.send(Err(TorControlError::ChannelClosed));
-                        }
-                        break;
-                    }
-                    Some(Err(error)) => {
-                        if let Some(response) = pending.take() {
-                            let _ = response.send(Err(error));
-                        }
-                        break;
-                    }
-                    None => break,
-                }
-            }
+        .await;
+        let connection_closed = result.is_err();
+        let _ = command.response.send(result);
+        if connection_closed {
+            break;
         }
     }
-    reader_task.abort();
+}
+
+fn bootstrap_progress(reply: &ControlReply) -> Option<u8> {
+    reply.lines.iter().find_map(|line| {
+        let value = match line {
+            ControlLine::Text(value) => value.as_str(),
+            ControlLine::KeyValue { key, value } if key == "status/bootstrap-phase" => value,
+            _ => return None,
+        };
+        let marker = value.find("BOOTSTRAP")?;
+        let words = control_words(&value[marker + "BOOTSTRAP".len()..]);
+        field(&words, "PROGRESS")?.parse().ok()
+    })
 }
 
 fn parse_protocol_info(reply: &ControlReply) -> Result<ProtocolInfo, TorControlError> {
@@ -266,4 +212,38 @@ fn parse_protocol_info(reply: &ControlReply) -> Result<ProtocolInfo, TorControlE
         cookie_file,
         tor_version,
     })
+}
+
+pub(crate) fn control_words(input: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.trim().chars();
+    let mut quoted = false;
+
+    while let Some(character) = chars.next() {
+        match character {
+            '"' => quoted = !quoted,
+            '\\' if quoted => {
+                if let Some(escaped) = chars.next() {
+                    current.push(escaped);
+                }
+            }
+            character if character.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+pub(crate) fn field<'a>(words: &'a [String], name: &str) -> Option<&'a str> {
+    words
+        .iter()
+        .find_map(|word| word.strip_prefix(name)?.strip_prefix('='))
 }

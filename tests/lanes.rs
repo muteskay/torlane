@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use torlane::{
-    InstanceId, Lane, LaneError, LaneId, LaneState, PoolConfig, PoolConfigError, RestartBackoff,
+    InstanceId, Lane, LaneError, LaneId, LaneState, PoolConfig, PoolConfigError,
     generate_lane_auth, rotate_lane,
 };
 
@@ -95,12 +95,7 @@ fn valid_pool_config_passes_validation() {
     let config = PoolConfig::new(64)
         .lane_ttl(Duration::from_secs(600))
         .lane_max_assignments(100)
-        .bootstrap_timeout(Duration::from_secs(30))
-        .restart_backoff(RestartBackoff {
-            initial: Duration::from_millis(250),
-            max: Duration::from_secs(10),
-            multiplier: 1.5,
-        });
+        .bootstrap_timeout(Duration::from_secs(30));
 
     assert_eq!(config.validate(), Ok(()));
 }
@@ -133,58 +128,6 @@ fn pool_config_rejects_zero_bootstrap_timeout() {
             .validate(),
         Err(PoolConfigError::ZeroBootstrapTimeout)
     );
-}
-
-#[test]
-fn pool_config_rejects_invalid_restart_backoff() {
-    let invalid = [
-        (
-            RestartBackoff {
-                initial: Duration::ZERO,
-                max: Duration::from_secs(1),
-                multiplier: 2.0,
-            },
-            PoolConfigError::ZeroRestartBackoffInitial,
-        ),
-        (
-            RestartBackoff {
-                initial: Duration::from_secs(1),
-                max: Duration::ZERO,
-                multiplier: 2.0,
-            },
-            PoolConfigError::ZeroRestartBackoffMax,
-        ),
-        (
-            RestartBackoff {
-                initial: Duration::from_secs(2),
-                max: Duration::from_secs(1),
-                multiplier: 2.0,
-            },
-            PoolConfigError::RestartBackoffInitialExceedsMax,
-        ),
-        (
-            RestartBackoff {
-                initial: Duration::from_secs(1),
-                max: Duration::from_secs(2),
-                multiplier: f32::NAN,
-            },
-            PoolConfigError::InvalidRestartBackoffMultiplier(f32::NAN),
-        ),
-    ];
-
-    for (backoff, expected) in invalid {
-        let error = PoolConfig::new(1)
-            .restart_backoff(backoff)
-            .validate()
-            .unwrap_err();
-        match (error, expected) {
-            (
-                PoolConfigError::InvalidRestartBackoffMultiplier(actual),
-                PoolConfigError::InvalidRestartBackoffMultiplier(_),
-            ) => assert!(actual.is_nan()),
-            (actual, expected) => assert_eq!(actual, expected),
-        }
-    }
 }
 
 #[test]

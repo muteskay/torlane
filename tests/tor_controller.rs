@@ -8,46 +8,10 @@ use sha2::Sha256;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::sleep;
-use torlane::{
-    AuthMethod, ControlClient, ControlLine, TorControlError, TorEvent, wait_control_port_file,
-};
+use torlane::{AuthMethod, ControlClient, TorControlError, wait_control_port_file};
 
 const SERVER_HASH_KEY: &[u8] = b"Tor safe cookie authentication server-to-controller hash";
 const CLIENT_HASH_KEY: &[u8] = b"Tor safe cookie authentication controller-to-server hash";
-
-#[tokio::test]
-async fn routes_events_separately_from_command_replies() {
-    let (endpoint, server) = mock_server(|stream| async move {
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-        assert_eq!(read_command(&mut reader).await, "GETINFO example");
-        writer
-            .write_all(
-                b"650 STATUS_CLIENT NOTICE BOOTSTRAP PROGRESS=80 TAG=conn SUMMARY=\"Connecting\"\r\n\
-                  250-example=value\r\n\
-                  250 OK\r\n",
-            )
-            .await
-            .unwrap();
-    })
-    .await;
-
-    let client = ControlClient::connect(endpoint).await.unwrap();
-    let mut events = client.subscribe();
-    let reply = client.command("GETINFO example").await.unwrap();
-    assert_eq!(reply.code, 250);
-    assert!(reply.lines.contains(&ControlLine::KeyValue {
-        key: "example".to_string(),
-        value: "value".to_string(),
-    }));
-    assert!(matches!(
-        events.recv().await.unwrap(),
-        TorEvent::Bootstrap(event) if event.progress == 80
-            && event.tag.as_deref() == Some("conn")
-            && event.summary.as_deref() == Some("Connecting")
-    ));
-    server.await.unwrap();
-}
 
 #[tokio::test]
 async fn protocol_info_safecookie_and_ownership_handshake_succeed() {
@@ -164,15 +128,10 @@ async fn safecookie_rejects_invalid_server_hash() {
 }
 
 #[tokio::test]
-async fn waits_for_bootstrap_event_with_getinfo_fallback() {
+async fn polls_until_bootstrap_completes() {
     let (endpoint, server) = mock_server(|stream| async move {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
-        assert_eq!(
-            read_command(&mut reader).await,
-            "SETEVENTS STATUS_CLIENT"
-        );
-        writer.write_all(b"250 OK\r\n").await.unwrap();
         assert_eq!(
             read_command(&mut reader).await,
             "GETINFO status/bootstrap-phase"
@@ -180,8 +139,18 @@ async fn waits_for_bootstrap_event_with_getinfo_fallback() {
         writer
             .write_all(
                 b"250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=55 TAG=loading SUMMARY=\"Loading\"\r\n\
-                  250 OK\r\n\
-                  650 STATUS_CLIENT NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY=\"Done\"\r\n",
+                  250 OK\r\n",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read_command(&mut reader).await,
+            "GETINFO status/bootstrap-phase"
+        );
+        writer
+            .write_all(
+                b"250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY=\"Done\"\r\n\
+                  250 OK\r\n",
             )
             .await
             .unwrap();
@@ -189,7 +158,6 @@ async fn waits_for_bootstrap_event_with_getinfo_fallback() {
     .await;
 
     let client = ControlClient::connect(endpoint).await.unwrap();
-    client.enable_bootstrap_events().await.unwrap();
     client.wait_bootstrap(Duration::from_secs(1)).await.unwrap();
     server.await.unwrap();
 }

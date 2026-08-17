@@ -14,10 +14,6 @@ pub enum PoolConfigError {
     ZeroLaneTtl,
     ZeroLaneMaxAssignments,
     ZeroBootstrapTimeout,
-    ZeroRestartBackoffInitial,
-    ZeroRestartBackoffMax,
-    RestartBackoffInitialExceedsMax,
-    InvalidRestartBackoffMultiplier(f32),
 }
 
 impl std::fmt::Display for PoolConfigError {
@@ -34,19 +30,6 @@ impl std::fmt::Display for PoolConfigError {
             Self::ZeroBootstrapTimeout => {
                 formatter.write_str("bootstrap timeout must be greater than zero")
             }
-            Self::ZeroRestartBackoffInitial => {
-                formatter.write_str("restart backoff initial delay must be greater than zero")
-            }
-            Self::ZeroRestartBackoffMax => {
-                formatter.write_str("restart backoff maximum delay must be greater than zero")
-            }
-            Self::RestartBackoffInitialExceedsMax => {
-                formatter.write_str("restart backoff initial delay exceeds maximum delay")
-            }
-            Self::InvalidRestartBackoffMultiplier(value) => write!(
-                formatter,
-                "restart backoff multiplier must be finite and at least 1.0, got {value}"
-            ),
         }
     }
 }

@@ -1,8 +1,6 @@
 mod auth;
 mod client;
 mod codec;
-mod command;
-mod events;
 
 use std::io;
 use std::net::SocketAddr;
@@ -12,7 +10,6 @@ use std::time::Duration;
 pub use auth::AuthMethod;
 pub use client::{ControlClient, ProtocolInfo};
 pub use codec::{ControlLine, ControlReply};
-pub use events::{BootstrapEvent, TorEvent};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TorControlError {
