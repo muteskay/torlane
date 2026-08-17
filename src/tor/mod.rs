@@ -1,3 +1,4 @@
+pub mod controller;
 pub mod error;
 pub mod identity;
 pub mod instance;
@@ -6,6 +7,7 @@ pub mod torc;
 pub mod verify;
 pub mod version;
 
+pub use controller::*;
 pub use error::{
     TorIdentityError, TorProcessError, TorRuntimeValidationError, TorVerifyError, TorVersionError,
 };

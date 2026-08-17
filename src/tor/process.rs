@@ -1,23 +1,25 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ExitStatus, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
+use tokio::time::{Duration, timeout};
 
 use crate::tor::error::TorProcessError;
 use crate::tor::torc::config::TorConfig;
 use crate::tor::torc::error::TorWriteError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum TorConfigSource {
+    #[default]
     Stdin,
     File(PathBuf),
-}
-
-impl Default for TorConfigSource {
-    fn default() -> Self {
-        Self::Stdin
-    }
 }
 
 impl TorConfigSource {
@@ -29,17 +31,12 @@ impl TorConfigSource {
 #[derive(Debug)]
 pub struct TorProcess {
     child: Child,
+    stdout_task: Option<JoinHandle<()>>,
+    stderr_task: Option<JoinHandle<()>>,
 }
 
 impl TorProcess {
     pub async fn spawn(
-        tor_binary: impl AsRef<Path>,
-        config: &TorConfig,
-    ) -> Result<Self, TorProcessError> {
-        Self::spawn_with_source(tor_binary, config, &TorConfigSource::default()).await
-    }
-
-    pub async fn spawn_with_source(
         tor_binary: impl AsRef<Path>,
         config: &TorConfig,
         source: &TorConfigSource,
@@ -47,7 +44,11 @@ impl TorProcess {
         remove_stale_control_port_file(config)?;
 
         let mut command = Command::new(tor_binary.as_ref());
-        command.arg("-f");
+        command
+            .arg("-f")
+            .kill_on_drop(true)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         match source {
             TorConfigSource::Stdin => {
@@ -60,40 +61,176 @@ impl TorProcess {
         }
 
         let mut child = command.spawn()?;
+        let stdout_task = child
+            .stdout
+            .take()
+            .map(|stdout| tokio::spawn(drain_output(stdout, OutputStream::Stdout)));
+        let stderr_task = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(drain_output(stderr, OutputStream::Stderr)));
 
-        if matches!(source, TorConfigSource::File(_)) {
-            return Ok(Self { child });
-        }
-
-        let Some(stdin) = &mut child.stdin else {
-            return Err(TorProcessError::MissingStdin);
+        let mut process = Self {
+            child,
+            stdout_task,
+            stderr_task,
         };
 
-        if let Err(error) = write_config_to_stdin(config, stdin) {
-            let _ = child.kill();
-            return Err(TorProcessError::Io(error));
+        if matches!(source, TorConfigSource::Stdin) {
+            if let Err(error) = process.write_config_to_stdin(config).await {
+                let _ = process.child.start_kill();
+                let _ = process.child.wait().await;
+                process.finish_output_tasks().await;
+                return Err(error);
+            }
         }
 
-        drop(child.stdin.take());
-        Ok(Self { child })
+        Ok(process)
+    }
+
+    /// Convenience wrapper for the default in-memory configuration delivery.
+    pub async fn spawn_default(
+        tor_binary: impl AsRef<Path>,
+        config: &TorConfig,
+    ) -> Result<Self, TorProcessError> {
+        Self::spawn(tor_binary, config, &TorConfigSource::default()).await
+    }
+
+    /// Backwards-compatible explicit-source alias.
+    pub async fn spawn_with_source(
+        tor_binary: impl AsRef<Path>,
+        config: &TorConfig,
+        source: &TorConfigSource,
+    ) -> Result<Self, TorProcessError> {
+        Self::spawn(tor_binary, config, source).await
     }
 
     pub fn id(&self) -> Option<u32> {
-        Some(self.child.id())
+        self.child.id()
     }
 
-    pub fn shutdown(&mut self) -> Result<(), TorProcessError> {
-        self.child.kill()?;
+    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>, TorProcessError> {
+        Ok(self.child.try_wait()?)
+    }
+
+    pub async fn wait(&mut self) -> Result<ExitStatus, TorProcessError> {
+        let status = self.child.wait().await?;
+        self.finish_output_tasks().await;
+        Ok(status)
+    }
+
+    pub fn start_kill(&mut self) -> Result<(), TorProcessError> {
+        self.child.start_kill()?;
         Ok(())
     }
 
+    /// Compatibility alias for callers that previously used `kill()`.
     pub fn kill(&mut self) -> Result<(), TorProcessError> {
-        self.child.kill()?;
+        self.start_kill()
+    }
+
+    pub async fn shutdown(&mut self) -> Result<(), TorProcessError> {
+        if self.child.try_wait()?.is_none() {
+            self.start_graceful_shutdown()?;
+        }
+
+        match timeout(SHUTDOWN_TIMEOUT, self.child.wait()).await {
+            Ok(result) => {
+                result?;
+            }
+            Err(_) => {
+                self.child.start_kill()?;
+                self.child.wait().await?;
+            }
+        }
+
+        self.finish_output_tasks().await;
         Ok(())
     }
 
-    pub fn wait(&mut self) -> Result<std::process::ExitStatus, TorProcessError> {
-        Ok(self.child.wait()?)
+    #[cfg(unix)]
+    fn start_graceful_shutdown(&mut self) -> Result<(), TorProcessError> {
+        let Some(pid) = self.child.id() else {
+            return Ok(());
+        };
+        let pid = i32::try_from(pid).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "child PID does not fit i32")
+        })?;
+
+        // SAFETY: `kill` only reads the PID and signal values supplied here.
+        if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+            return Ok(());
+        }
+
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(error.into())
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn start_graceful_shutdown(&mut self) -> Result<(), TorProcessError> {
+        self.start_kill()
+    }
+
+    async fn write_config_to_stdin(&mut self, config: &TorConfig) -> Result<(), TorProcessError> {
+        let Some(mut stdin) = self.child.stdin.take() else {
+            return Err(TorProcessError::MissingStdin);
+        };
+
+        stdin.write_all(config.render().as_bytes()).await?;
+        stdin.flush().await?;
+        stdin.shutdown().await?;
+        Ok(())
+    }
+
+    async fn finish_output_tasks(&mut self) {
+        if let Some(task) = self.stdout_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.stderr_task.take() {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for TorProcess {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
+        if let Some(task) = self.stdout_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.stderr_task.take() {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+async fn drain_output(output: impl AsyncRead + Unpin, stream: OutputStream) {
+    let mut lines = BufReader::new(output).lines();
+
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => match stream {
+                OutputStream::Stdout => {
+                    tracing::debug!(target: "torlane::tor", %line, "tor stdout")
+                }
+                OutputStream::Stderr => tracing::warn!(target: "torlane::tor", %line, "tor stderr"),
+            },
+            Ok(None) => break,
+            Err(error) => {
+                tracing::warn!(target: "torlane::tor", %error, "failed to read tor output");
+                break;
+            }
+        }
     }
 }
 
@@ -117,11 +254,6 @@ pub fn write_config_to_file(
     path: impl AsRef<Path>,
 ) -> Result<(), TorWriteError> {
     atomic_write(path.as_ref(), &config.render())
-}
-
-fn write_config_to_stdin(config: &TorConfig, child_stdin: &mut ChildStdin) -> io::Result<()> {
-    child_stdin.write_all(config.render().as_bytes())?;
-    child_stdin.flush()
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), TorWriteError> {
