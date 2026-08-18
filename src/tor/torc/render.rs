@@ -163,14 +163,6 @@ pub fn render_config(config: &TorConfig) -> String {
 
     section(&mut out, "Logging", render_logging(&config.logging));
 
-    if let Some(metrics) = &config.metrics {
-        let mut lines = vec![format!("MetricsPort {}", metrics.listen)];
-        for policy in &metrics.policy {
-            lines.push(format!("MetricsPortPolicy {policy}"));
-        }
-        section(&mut out, "Metrics", lines);
-    }
-
     section(
         &mut out,
         "Raw",

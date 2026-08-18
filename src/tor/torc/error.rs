@@ -17,25 +17,11 @@ pub enum TorConfigError {
     #[error("listener port {0} is duplicated")]
     DuplicatePort(u16),
 
-    #[error("bridges enabled but no bridges configured")]
-    BridgesEnabledButNoneConfigured,
-
     #[error("bridge transport `{0}` has no plugin")]
     MissingTransportPlugin(String),
 
     #[error("invalid obfs4 bridge: {0}")]
     InvalidObfs4Bridge(&'static str),
-
-    #[error("{option}={value} outside range {min}..={max}")]
-    OutOfRange {
-        option: &'static str,
-        value: i64,
-        min: i64,
-        max: i64,
-    },
-
-    #[error("metrics bound to a non-loopback address require an explicit access policy")]
-    MetricsNonLoopbackWithoutPolicy,
 
     #[error("invalid raw option key")]
     InvalidRawOptionKey,

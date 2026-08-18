@@ -7,7 +7,6 @@ use crate::tor::torc::config::{TorConfig, TorConfigWarning};
 use crate::tor::torc::control::{ControlAuth, ControlConfig};
 use crate::tor::torc::error::TorConfigError;
 use crate::tor::torc::logging::LoggingConfig;
-use crate::tor::torc::metrics::MetricsConfig;
 use crate::tor::torc::network::NetworkConfig;
 use crate::tor::torc::nodes::NodeSelectionConfig;
 use crate::tor::torc::option::TorOption;
@@ -27,7 +26,6 @@ pub struct TorConfigBuilder {
     node_selection: NodeSelectionConfig,
     system: SystemConfig,
     logging: LoggingConfig,
-    metrics: Option<MetricsConfig>,
     raw_options: Vec<TorOption>,
 }
 
@@ -44,13 +42,8 @@ impl TorConfigBuilder {
             node_selection: NodeSelectionConfig::default(),
             system: SystemConfig::default(),
             logging: LoggingConfig::default(),
-            metrics: None,
             raw_options: Vec::new(),
         }
-    }
-
-    pub fn scraper(data_directory: impl Into<PathBuf>) -> Self {
-        Self::new(data_directory).system(SystemConfig::default().avoid_disk_writes(true))
     }
 
     pub fn control(mut self, config: ControlConfig) -> Self {
@@ -98,11 +91,6 @@ impl TorConfigBuilder {
         self
     }
 
-    pub fn metrics(mut self, config: MetricsConfig) -> Self {
-        self.metrics = Some(config);
-        self
-    }
-
     pub fn raw_option(mut self, option: TorOption) -> Self {
         self.raw_options.push(option);
         self
@@ -133,16 +121,9 @@ impl TorConfigBuilder {
         }
 
         self.validate_duplicate_ports()?;
-        self.validate_numeric_ranges()?;
 
         if let Some(bridges) = &self.bridges {
             bridges.validate()?;
-        }
-
-        if let Some(metrics) = &self.metrics {
-            if !metrics.listen.ip().is_loopback() && metrics.policy.is_empty() {
-                return Err(TorConfigError::MetricsNonLoopbackWithoutPolicy);
-            }
         }
 
         if self.socks.listeners().len() > 32 {
@@ -172,7 +153,6 @@ impl TorConfigBuilder {
             self.node_selection,
             self.system,
             self.logging,
-            self.metrics,
             self.raw_options,
             warnings,
         ))
@@ -199,46 +179,6 @@ impl TorConfigBuilder {
             }
         }
 
-        if let Some(metrics) = &self.metrics {
-            let port = metrics.listen.port();
-            if !seen.insert(port) {
-                return Err(TorConfigError::DuplicatePort(port));
-            }
-        }
-
         Ok(())
     }
-
-    fn validate_numeric_ranges(&self) -> Result<(), TorConfigError> {
-        if let Some(value) = self.circuits.max_client_circuits_pending {
-            validate_range("MaxClientCircuitsPending", value as i64, 1, 1024)?;
-        }
-
-        if let Some(value) = self.circuits.num_entry_guards {
-            validate_range("NumEntryGuards", value as i64, 1, 10)?;
-        }
-
-        if let Some(value) = self.system.conn_limit {
-            validate_range("ConnLimit", value as i64, 1, i64::from(u32::MAX))?;
-        }
-
-        Ok(())
-    }
-}
-
-fn validate_range(
-    option: &'static str,
-    value: i64,
-    min: i64,
-    max: i64,
-) -> Result<(), TorConfigError> {
-    if !(min..=max).contains(&value) {
-        return Err(TorConfigError::OutOfRange {
-            option,
-            value,
-            min,
-            max,
-        });
-    }
-    Ok(())
 }

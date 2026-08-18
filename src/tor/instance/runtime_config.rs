@@ -26,9 +26,5 @@ pub fn build_runtime_config(
         builder = builder.bridges(bridges.clone());
     }
 
-    if let Some(metrics) = &policy.metrics {
-        builder = builder.metrics(metrics.clone());
-    }
-
     builder.build()
 }

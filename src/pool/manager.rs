@@ -61,7 +61,6 @@ impl Pool {
         PoolBuilder::default()
     }
 
-    //todo что будет если следующая прокси занята, а прокси после неё свободна ?
     pub fn next_proxy(&self) -> Result<Proxy, PoolError> {
         let ready = read_lock(&self.inner.ready).clone();
         if ready.lanes.is_empty() {

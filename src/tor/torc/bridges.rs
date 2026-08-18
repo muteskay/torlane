@@ -129,10 +129,6 @@ impl BridgeConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), TorConfigError> {
-        if self.use_bridges && self.bridges.is_empty() {
-            return Err(TorConfigError::BridgesEnabledButNoneConfigured);
-        }
-
         let transports: HashSet<&str> = self
             .transport_plugins
             .iter()

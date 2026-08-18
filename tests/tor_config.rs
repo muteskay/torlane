@@ -304,12 +304,12 @@ fn bridge_validation_covers_obfs4() {
     );
     assert!(config.render().contains("Bridge obfs4 192.0.2.10:443"));
 
-    let error = TorConfigBuilder::new("/tmp/tor/data")
+    let empty = TorConfigBuilder::new("/tmp/tor/data")
         .socks(SocksConfig::isolated_auth(20300))
         .bridges(BridgeConfig::obfs4("/usr/bin/lyrebird"))
         .build()
-        .unwrap_err();
-    assert_eq!(error, TorConfigError::BridgesEnabledButNoneConfigured);
+        .unwrap();
+    assert!(empty.render().contains("UseBridges 1\n"));
 
     let error = TorConfigBuilder::new("/tmp/tor/data")
         .socks(SocksConfig::isolated_auth(20300))
@@ -357,8 +357,9 @@ fn raw_options_are_injection_safe() {
 }
 
 #[test]
-fn standard_scraper_snapshot() {
-    let config = TorConfigBuilder::scraper("/tmp/tor/tor_0/data")
+fn standard_config_snapshot() {
+    let config = TorConfigBuilder::new("/tmp/tor/tor_0/data")
+        .system(SystemConfig::default().avoid_disk_writes(true))
         .control(
             ControlConfig::tcp(20000)
                 .cookie_authentication()
@@ -402,7 +403,6 @@ fn comprehensive_config_writes_rendered_torrc_file() {
     let control_port_file = root.join("control.port");
     let tor_log = root.join("logs").join("tor.log");
     let bridge_addr: SocketAddr = "192.0.2.20:443".parse().unwrap();
-    let metrics_addr: SocketAddr = "127.0.0.1:9035".parse().unwrap();
 
     let config = TorConfigBuilder::new(&data_dir)
         .control(
@@ -471,7 +471,6 @@ fn comprehensive_config_writes_rendered_torrc_file() {
                 .safe_logging(true)
                 .syslog_identity_tag("torlane-test"),
         )
-        .metrics(MetricsConfig::prometheus(metrics_addr).policy(["accept 127.0.0.1"]))
         .raw_option(TorOption::new("UseMicrodescriptors", "1").unwrap())
         .build()
         .unwrap();
@@ -498,15 +497,13 @@ fn comprehensive_config_writes_rendered_torrc_file() {
     assert!(saved.contains("ExitNodes {us},{de}\n"));
     assert!(saved.contains("AvoidDiskWrites 1\n"));
     assert!(saved.contains(&format!("Log warn file {}\n", tor_log.display())));
-    assert!(saved.contains("MetricsPortPolicy accept 127.0.0.1\n"));
     assert!(saved.contains("UseMicrodescriptors 1\n"));
 
     let _ = fs::remove_dir_all(root);
 }
 
 #[test]
-fn advanced_circuit_and_metrics_render() {
-    let metrics_addr: SocketAddr = "127.0.0.1:9035".parse().unwrap();
+fn advanced_circuit_config_renders() {
     let config = TorConfigBuilder::new("/tmp/tor/data")
         .socks(SocksConfig::isolated_auth(20300))
         .circuits(
@@ -514,7 +511,6 @@ fn advanced_circuit_and_metrics_render() {
                 .max_dirtiness(Duration::from_secs(600))
                 .max_client_circuits_pending(64),
         )
-        .metrics(MetricsConfig::prometheus(metrics_addr))
         .raw_option(TorOption::new("SomeFutureOption", "123").unwrap())
         .build()
         .unwrap();
@@ -522,7 +518,6 @@ fn advanced_circuit_and_metrics_render() {
     let rendered = config.render();
     assert!(rendered.contains("MaxCircuitDirtiness 600\n"));
     assert!(rendered.contains("MaxClientCircuitsPending 64\n"));
-    assert!(rendered.contains("MetricsPort 127.0.0.1:9035\n"));
     assert!(rendered.contains("SomeFutureOption 123\n"));
 }
 
@@ -565,7 +560,8 @@ fn generated_config_passes_tor_verify() {
     let data_dir = root.join("data");
     fs::create_dir_all(&root).unwrap();
 
-    let config = TorConfigBuilder::scraper(&data_dir)
+    let config = TorConfigBuilder::new(&data_dir)
+        .system(SystemConfig::default().avoid_disk_writes(true))
         .control(
             ControlConfig::auto_tcp()
                 .cookie_authentication()

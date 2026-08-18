@@ -104,13 +104,65 @@ secrets.
 
 ## Proxy selection
 
-`Pool::next_proxy()` selects the next ready lane using round-robin order. It
-does not perform network I/O.
+`Pool::next_proxy()` and `Pool::proxy_for(session)` both return an immutable
+`Proxy`, but they solve different selection problems. Neither method performs
+network I/O.
 
-`Pool::proxy_for(session)` hashes the session key to a stable logical
-`LaneId`. If that lane is temporarily unavailable, the method returns
-`PoolError::LaneUnavailable` instead of silently moving the session to a
-different identity.
+Use `next_proxy()` for independent or stateless work. It selects the next ready
+lane in round-robin order, so consecutive calls normally use different lanes:
+
+```rust,no_run
+# use torlane::Pool;
+# fn example(pool: &Pool) -> Result<(), torlane::PoolError> {
+let first = pool.next_proxy()?;
+let second = pool.next_proxy()?;
+// With at least two ready lanes, these normally have different LaneIds.
+# let _ = (first, second);
+# Ok(())
+# }
+```
+
+Use `proxy_for(session)` when related requests should have session affinity.
+The session string is hashed to a stable logical `LaneId`, so the same key is
+mapped to the same lane:
+
+```rust,no_run
+# use torlane::Pool;
+# fn example(pool: &Pool) -> Result<(), torlane::PoolError> {
+let first = pool.proxy_for("customer-42")?;
+let second = pool.proxy_for("customer-42")?;
+assert_eq!(first.lane(), second.lane());
+# Ok(())
+# }
+```
+
+This is useful for keeping one account or browser-like session on one Tor
+isolation context while other sessions use other lanes. The HTTP client or the
+application owns the cookies: `proxy_for()` does not store cookies itself. A
+caller that needs cookies should keep a cookie jar and reuse the same configured
+HTTP client for that logical session.
+
+Session affinity does **not** pin an exit IP. Tor may replace circuits because
+of age, failures, destination, or its own circuit-management policy, so requests
+on the same lane can observe different exit IPs. Conversely, different lanes
+can use the same exit relay. A lane supplies an isolation input to Tor, not a
+fixed circuit or dedicated exit.
+
+The mapping is also not exclusive: two different session keys can hash to the
+same lane. If the selected sticky lane is temporarily unavailable,
+`proxy_for()` returns `PoolError::LaneUnavailable` instead of silently moving
+the session to a different identity. After lane rotation the key still selects
+the same `LaneId`, but a later `proxy_for()` call returns the new epoch and new
+SOCKS credentials; an already returned `Proxy` or built HTTP client is not
+updated automatically.
+
+In short:
+
+- choose `next_proxy()` to distribute unrelated work across ready lanes;
+- choose `proxy_for(session)` to keep related work associated with one logical
+  Tor identity;
+- use a static proxy rather than either method if the application requires a
+  guaranteed fixed external IP.
 
 ## Lane rotation
 
@@ -146,10 +198,111 @@ process drop handling also reduce the risk of leaving an orphan Tor process.
 
 Call `snapshot()` again to observe newer state.
 
-## Configuration delivery
+## Configuration levels and delivery
 
-The generated Tor configuration is sent through stdin by default, so no
-physical `torrc` is required. File mode can be enabled explicitly:
+`torlane` provides a managed pool API and a lower-level Tor configuration API.
+Both paths eventually produce a validated `TorConfig`, but they assign
+responsibility for the runtime topology differently.
+
+### Managed pool with `TorPolicy`
+
+Use `PoolBuilder` and `TorPolicy` when the application wants `torlane` to own
+the Tor process, controller connection, SOCKS endpoint, and logical lanes:
+
+```rust,no_run
+use torlane::{NetworkConfig, Pool, TorPolicy};
+
+# async fn example() -> Result<(), torlane::PoolError> {
+let policy = TorPolicy {
+    network: NetworkConfig::dual_stack(),
+    ..TorPolicy::default()
+};
+
+let pool = Pool::builder()
+    .work_dir("./.torlane")
+    .policy(policy)
+    .lanes(8)
+    .build()
+    .await?;
+
+// `torlane` has started Tor, authenticated the controller, waited for
+// bootstrap, discovered the SOCKS listener, and created the lane pool.
+let proxy = pool.next_proxy()?;
+# let _ = proxy;
+pool.shutdown().await?;
+# Ok(())
+# }
+```
+
+`TorPolicy` contains the application-selectable network, circuit, padding,
+bridge, node-selection, system, and logging policy. The managed runtime
+deliberately owns the settings required by the pool topology:
+
+- `DataDirectory` under the configured work directory;
+- one loopback Control Port with cookie authentication and controller
+  ownership;
+- one loopback, automatically allocated SOCKS listener with
+  `IsolateSOCKSAuth` and `KeepAliveIsolateSOCKSAuth`;
+- the files used to discover automatically allocated endpoints.
+
+Consequently, `TorPolicy` does not expose `ControlConfig`, `SocksConfig`, or
+raw Tor options. This prevents a policy from replacing settings on which pool
+startup, isolation, restart, and shutdown depend.
+
+The managed construction path is:
+
+```text
+TorPolicy + PoolBuilder
+        +
+torlane-owned runtime topology
+        |
+        v
+TorConfigBuilder -> TorConfig -> tor --verify-config -> TorInstance -> Pool
+```
+
+### Low-level configuration with `TorConfigBuilder`
+
+Use `TorConfigBuilder` when the application needs to choose the listeners or
+construct a Tor process without the lane pool:
+
+```rust,no_run
+use std::path::Path;
+
+use torlane::{
+    SocksConfig, TorConfigBuilder, TorOption, TorProcess, verify_config_with,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let config = TorConfigBuilder::new("./tor-data")
+    .socks(SocksConfig::isolated_auth(9050))
+    .raw_option(TorOption::new("DormantTimeoutEnabled", "0")?)
+    .build()?;
+
+verify_config_with(&config, Path::new("tor"))?;
+let mut process = TorProcess::spawn_default("tor", &config).await?;
+
+# process.shutdown().await?;
+# Ok(())
+# }
+```
+
+`TorConfigBuilder::build()` checks the invariants known to `torlane` and
+returns the final renderable `TorConfig`. `TorOption` is an escape hatch for
+valid one-line Tor options that do not have a typed API. It prevents newline
+injection, but it does not know whether Tor supports the option, whether its
+value is valid, or whether it conflicts with a typed setting. Call
+`verify_config_with()` before a low-level launch to let the selected Tor binary
+validate the result.
+
+Unlike `TorInstance`, `TorProcess::spawn()` does not automatically verify the
+configuration, authenticate a controller, wait for bootstrap, discover the
+SOCKS address, create lanes, or provide pool restart semantics. Those concerns
+belong to the caller in the low-level path.
+
+### Configuration delivery
+
+Generated configuration is sent through stdin by default, so no physical
+`torrc` is required. Managed file delivery can be enabled explicitly:
 
 ```rust,no_run
 # use torlane::Pool;
@@ -164,8 +317,10 @@ let pool = Pool::builder()
 # }
 ```
 
-Low-level Tor policy types are available for network, circuit, bridge, node
-selection, padding, logging, and related settings.
+`PoolBuilder::torrc_file(path)` does not load an existing arbitrary `torrc`.
+It changes only the delivery mode: `torlane` writes its generated `TorConfig`
+to `path` and starts Tor with that file instead of passing the same generated
+configuration through stdin.
 
 ## Reqwest integration
 

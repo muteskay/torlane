@@ -4,7 +4,6 @@ use crate::tor::torc::bridges::BridgeConfig;
 use crate::tor::torc::circuits::CircuitConfig;
 use crate::tor::torc::control::ControlConfig;
 use crate::tor::torc::logging::LoggingConfig;
-use crate::tor::torc::metrics::MetricsConfig;
 use crate::tor::torc::network::NetworkConfig;
 use crate::tor::torc::nodes::NodeSelectionConfig;
 use crate::tor::torc::option::TorOption;
@@ -34,7 +33,6 @@ pub struct TorConfig {
     pub(crate) node_selection: NodeSelectionConfig,
     pub(crate) system: SystemConfig,
     pub(crate) logging: LoggingConfig,
-    pub(crate) metrics: Option<MetricsConfig>,
     pub(crate) raw_options: Vec<TorOption>,
     pub(crate) warnings: Vec<TorConfigWarning>,
 }
@@ -52,7 +50,6 @@ impl TorConfig {
         node_selection: NodeSelectionConfig,
         system: SystemConfig,
         logging: LoggingConfig,
-        metrics: Option<MetricsConfig>,
         raw_options: Vec<TorOption>,
         warnings: Vec<TorConfigWarning>,
     ) -> Self {
@@ -67,7 +64,6 @@ impl TorConfig {
             node_selection,
             system,
             logging,
-            metrics,
             raw_options,
             warnings,
         }
