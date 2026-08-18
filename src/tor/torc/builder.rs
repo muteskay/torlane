@@ -14,11 +14,20 @@ use crate::tor::torc::padding::PaddingConfig;
 use crate::tor::torc::socks::SocksConfig;
 use crate::tor::torc::system::SystemConfig;
 
+/// Builds a complete configuration for a Tor process.
+///
+/// A managed pool supplies its runtime topology and exposes configurable Tor
+/// behavior through [`TorPolicy`](crate::TorPolicy). Low-level callers can use
+/// this builder to configure both groups directly.
 #[derive(Debug, Clone)]
 pub struct TorConfigBuilder {
+    // Runtime topology owned by the managed pool. When using this builder
+    // directly, the caller is responsible for configuring these values.
     data_directory: PathBuf,
     control: Option<ControlConfig>,
     socks: SocksConfig,
+
+    // Tor behavior exposed through TorPolicy in the managed pool API.
     network: NetworkConfig,
     circuits: CircuitConfig,
     padding: PaddingConfig,
@@ -26,6 +35,9 @@ pub struct TorConfigBuilder {
     node_selection: NodeSelectionConfig,
     system: SystemConfig,
     logging: LoggingConfig,
+
+    // Escape hatch for Tor options without a typed torlane API. Raw options
+    // are available only through this low-level builder, not through TorPolicy.
     raw_options: Vec<TorOption>,
 }
 
