@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use crate::tor::torc::bridges::BridgeConfig;
 use crate::tor::torc::circuits::CircuitConfig;
 use crate::tor::torc::control::ControlConfig;
-use crate::tor::torc::dormancy::DormancyConfig;
 use crate::tor::torc::logging::LoggingConfig;
 use crate::tor::torc::metrics::MetricsConfig;
 use crate::tor::torc::network::NetworkConfig;
@@ -31,7 +30,6 @@ pub struct TorConfig {
     pub(crate) network: NetworkConfig,
     pub(crate) circuits: CircuitConfig,
     pub(crate) padding: PaddingConfig,
-    pub(crate) dormancy: DormancyConfig,
     pub(crate) bridges: Option<BridgeConfig>,
     pub(crate) node_selection: NodeSelectionConfig,
     pub(crate) system: SystemConfig,
@@ -50,7 +48,6 @@ impl TorConfig {
         network: NetworkConfig,
         circuits: CircuitConfig,
         padding: PaddingConfig,
-        dormancy: DormancyConfig,
         bridges: Option<BridgeConfig>,
         node_selection: NodeSelectionConfig,
         system: SystemConfig,
@@ -66,7 +63,6 @@ impl TorConfig {
             network,
             circuits,
             padding,
-            dormancy,
             bridges,
             node_selection,
             system,

@@ -121,25 +121,6 @@ pub fn render_config(config: &TorConfig) -> String {
         ]),
     );
 
-    section(
-        &mut out,
-        "Dormant mode",
-        present([
-            config
-                .dormancy
-                .timeout_enabled
-                .map(|v| format!("DormantTimeoutEnabled {}", Flag(v))),
-            config
-                .dormancy
-                .on_first_startup
-                .map(|v| format!("DormantOnFirstStartup {}", Flag(v))),
-            config
-                .dormancy
-                .canceled_by_startup
-                .map(|v| format!("DormantCanceledByStartup {}", Flag(v))),
-        ]),
-    );
-
     if let Some(bridges) = &config.bridges {
         section(&mut out, "Bridges", render_bridges(bridges));
     }

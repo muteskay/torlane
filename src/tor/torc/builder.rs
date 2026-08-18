@@ -5,7 +5,6 @@ use crate::tor::torc::bridges::BridgeConfig;
 use crate::tor::torc::circuits::CircuitConfig;
 use crate::tor::torc::config::{TorConfig, TorConfigWarning};
 use crate::tor::torc::control::{ControlAuth, ControlConfig};
-use crate::tor::torc::dormancy::DormancyConfig;
 use crate::tor::torc::error::TorConfigError;
 use crate::tor::torc::logging::LoggingConfig;
 use crate::tor::torc::metrics::MetricsConfig;
@@ -24,7 +23,6 @@ pub struct TorConfigBuilder {
     network: NetworkConfig,
     circuits: CircuitConfig,
     padding: PaddingConfig,
-    dormancy: DormancyConfig,
     bridges: Option<BridgeConfig>,
     node_selection: NodeSelectionConfig,
     system: SystemConfig,
@@ -42,7 +40,6 @@ impl TorConfigBuilder {
             network: NetworkConfig::tor_default(),
             circuits: CircuitConfig::default(),
             padding: PaddingConfig::default(),
-            dormancy: DormancyConfig::tor_default(),
             bridges: None,
             node_selection: NodeSelectionConfig::default(),
             system: SystemConfig::default(),
@@ -53,9 +50,7 @@ impl TorConfigBuilder {
     }
 
     pub fn scraper(data_directory: impl Into<PathBuf>) -> Self {
-        Self::new(data_directory)
-            .system(SystemConfig::default().avoid_disk_writes(true))
-            .dormancy(DormancyConfig::always_ready())
+        Self::new(data_directory).system(SystemConfig::default().avoid_disk_writes(true))
     }
 
     pub fn control(mut self, config: ControlConfig) -> Self {
@@ -80,11 +75,6 @@ impl TorConfigBuilder {
 
     pub fn padding(mut self, config: PaddingConfig) -> Self {
         self.padding = config;
-        self
-    }
-
-    pub fn dormancy(mut self, config: DormancyConfig) -> Self {
-        self.dormancy = config;
         self
     }
 
@@ -178,7 +168,6 @@ impl TorConfigBuilder {
             self.network,
             self.circuits,
             self.padding,
-            self.dormancy,
             self.bridges,
             self.node_selection,
             self.system,

@@ -11,7 +11,6 @@ pub fn build_runtime_config(
         .network(policy.network.clone())
         .circuits(policy.circuits.clone())
         .padding(policy.padding.clone())
-        .dormancy(policy.dormancy.clone())
         .node_selection(policy.node_selection.clone())
         .system(policy.system.clone())
         .logging(policy.logging.clone())

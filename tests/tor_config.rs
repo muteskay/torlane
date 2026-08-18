@@ -382,10 +382,6 @@ __OwningControllerProcess 12345\n\
 # *** SOCKS listeners ***\n\
 SocksPort 127.0.0.1:20300 ExtendedErrors IsolateSOCKSAuth KeepAliveIsolateSOCKSAuth\n\
 \n\
-# *** Dormant mode ***\n\
-DormantTimeoutEnabled 0\n\
-DormantOnFirstStartup 0\n\
-\n\
 # *** System ***\n\
 AvoidDiskWrites 1\n\
 \n\
@@ -447,12 +443,6 @@ fn comprehensive_config_writes_rendered_torrc_file() {
                 .reduced_circuit_padding(false)
                 .keepalive_period(Duration::from_secs(300)),
         )
-        .dormancy(
-            DormancyConfig::default()
-                .timeout_enabled(false)
-                .on_first_startup(false)
-                .canceled_by_startup(true),
-        )
         .bridges(
             BridgeConfig::obfs4("/usr/bin/lyrebird").bridge(Obfs4Bridge::new(
                 bridge_addr,
@@ -502,7 +492,6 @@ fn comprehensive_config_writes_rendered_torrc_file() {
     assert!(saved.contains("ClientUseIPv4 1\n"));
     assert!(saved.contains("MaxCircuitDirtiness 600\n"));
     assert!(saved.contains("ConnectionPadding auto\n"));
-    assert!(saved.contains("DormantCanceledByStartup 1\n"));
     assert!(saved.contains(
         "Bridge obfs4 192.0.2.20:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=abc iat-mode=1\n"
     ));
