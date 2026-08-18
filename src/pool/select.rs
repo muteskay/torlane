@@ -54,3 +54,55 @@ pub(crate) fn stable_lane_index(session: &str, lane_count: usize) -> usize {
     });
     (hash % lane_count as u64) as usize
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::tor::instance::InstanceId;
+
+    fn proxy() -> Proxy {
+        Proxy {
+            inner: Arc::new(LaneEndpoint {
+                lane: LaneId(3),
+                epoch: 7,
+                instance: InstanceId(0),
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 19050)),
+                auth: SocksAuth {
+                    username: Arc::from("lane-000003-00000007"),
+                    password: Arc::from("f00dcafe"),
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn proxy_debug_hides_password() {
+        let debug = format!("{:?}", proxy());
+
+        assert!(!debug.contains("f00dcafe"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(debug.contains("lane-000003-00000007"), "{debug}");
+    }
+
+    #[test]
+    fn ready_snapshot_debug_hides_password() {
+        let snapshot = ReadySnapshot {
+            lanes: Arc::from([Arc::clone(&proxy().inner)]),
+        };
+        let debug = format!("{snapshot:?}");
+
+        assert!(!debug.contains("f00dcafe"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+    }
+
+    #[test]
+    fn socks5h_url_carries_the_credentials() {
+        assert_eq!(
+            proxy().socks5h_url(),
+            "socks5h://lane-000003-00000007:f00dcafe@127.0.0.1:19050"
+        );
+    }
+}

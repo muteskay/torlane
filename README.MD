@@ -167,6 +167,67 @@ let pool = Pool::builder()
 Low-level Tor policy types are available for network, circuit, bridge, node
 selection, padding, logging, and related settings.
 
+## Reqwest integration
+
+An opt-in `reqwest` feature adds inherent methods on `Proxy` that turn an
+already selected lane into `reqwest` configuration:
+
+```toml
+[dependencies]
+torlane = { version = "0.1", features = ["reqwest"] }
+```
+
+```rust,no_run
+# #[cfg(feature = "reqwest")]
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+use torlane::Pool;
+
+let pool = Pool::builder().work_dir("./.torlane").lanes(4).build().await?;
+
+// Round-robin: a fresh client per selected lane.
+let proxy = pool.next_proxy()?;
+let client = proxy.reqwest_client()?;
+let response = client.get("https://check.torproject.org/api/ip").send().await?;
+println!("lane={} epoch={} status={}", proxy.lane().0, proxy.epoch(), response.status());
+
+// Sticky session with a caller-supplied builder.
+let sticky = pool.proxy_for("customer-42")?;
+let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+let sticky_client = sticky.configure_reqwest(builder)?.build()?;
+# let _ = sticky_client;
+# Ok(())
+# }
+```
+
+- `Proxy::reqwest_proxy()` builds a standalone `reqwest::Proxy` rule;
+- `Proxy::configure_reqwest(builder)` adds that rule to a caller-supplied
+  `reqwest::ClientBuilder`, keeping its other settings;
+- `Proxy::reqwest_client()` is the round-robin/sticky shorthand for the two
+  calls above.
+
+The adapter uses the `socks5h` scheme, so hostnames are resolved by Tor, not
+locally, and it passes the lane's username/password as SOCKS5 credentials
+(not HTTP `Proxy-Authorization`).
+
+Every built `reqwest::Client` is bound to the `Proxy` snapshot it came from:
+rotation (TTL, assignment limit, `Pool::retire()`) only affects lanes handed
+out by later `next_proxy()`/`proxy_for()` calls, an already built client keeps
+using its old lane credentials and open connections, and building a client
+does not itself count as an assignment. Reuse one client for the HTTP session
+that should share a lane identity, and get a new `Proxy`/client when the
+application is ready to accept a new epoch. See the `torlane::Proxy`
+module-level docs (built with `--features reqwest`) for the full contract.
+
+`reqwest::Proxy`'s own `Debug` output prints the lane password in clear text,
+unlike `torlane`'s types. Keep the value returned by `reqwest_proxy()` out of
+logs; log `Proxy::lane()` and `Proxy::epoch()` instead.
+
+A runnable example is included:
+
+```text
+cargo run --example reqwest --features reqwest
+```
+
 ## Current scope
 
 The project intentionally implements a basic pool. It does not currently
@@ -174,8 +235,7 @@ include:
 
 - automatic process supervision and restart backoff;
 - STREAM/CIRC observability;
-- active circuit warmup;
-- a built-in `reqwest` integration.
+- active circuit warmup.
 
 Applications can use `Proxy::addr()` and `Proxy::auth()` to configure any
 SOCKS5 client that supports username/password authentication and remote DNS.

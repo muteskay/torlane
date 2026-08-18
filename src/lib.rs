@@ -1,4 +1,6 @@
 pub mod pool;
+#[cfg(feature = "reqwest")]
+mod reqwest;
 pub mod tor;
 
 pub use pool::{
