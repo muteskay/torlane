@@ -32,6 +32,16 @@ logical identities without starting one Tor process per identity.
   `PoolBuilder::tor_binary`;
 - a Tokio runtime.
 
+## Installation from Git
+
+`torlane` is not published on crates.io yet. Add the Git repository directly:
+
+```toml
+[dependencies]
+torlane = { git = "https://github.com/muteskay/torlane.git" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
 ## Quick start
 
 ```rust,no_run
@@ -52,7 +62,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let proxy = pool.next_proxy()?;
-    println!("proxy URL: {}", proxy.socks5h_url());
+    println!(
+        "lane={} epoch={} SOCKS={}",
+        proxy.lane().0,
+        proxy.epoch(),
+        proxy.addr(),
+    );
 
     let sticky = pool.proxy_for("customer-42")?;
     assert_eq!(sticky.lane(), pool.proxy_for("customer-42")?.lane());
@@ -78,7 +93,17 @@ socks5h://lane-000003-00000001:<password>@127.0.0.1:19050
 ```
 
 The `socks5h` scheme instructs compatible HTTP clients to resolve hostnames
-through Tor instead of using local DNS.
+through Tor instead of using local DNS. The URL contains the lane password and
+must not be written to logs.
+
+`bootstrap_timeout` is an upper bound, not a fixed startup delay. `build()`
+returns as soon as Tor reports `PROGRESS=100`. In the managed pool path, the
+configured duration is applied separately to Control Port discovery and to Tor
+bootstrap, so total startup time can exceed one timeout interval.
+
+Unless overridden, a pool uses 16 lanes, a 90-second bootstrap timeout, no lane
+TTL, no assignment limit, the `tor` executable from `PATH`, and in-memory
+configuration delivery through stdin. `work_dir` has no default and is required.
 
 ## Runnable example
 
@@ -100,7 +125,9 @@ cargo run --example basic_pool
 
 The example intentionally does not print SOCKS credentials. Treat the username
 and password returned by `Proxy::auth()` or embedded in `socks5h_url()` as
-secrets.
+secrets. All lanes intentionally show the same SOCKS address: they are logical
+isolation contexts distinguished by credentials, not separate listeners or Tor
+processes.
 
 ## Proxy selection
 
@@ -160,9 +187,7 @@ In short:
 
 - choose `next_proxy()` to distribute unrelated work across ready lanes;
 - choose `proxy_for(session)` to keep related work associated with one logical
-  Tor identity;
-- use a static proxy rather than either method if the application requires a
-  guaranteed fixed external IP.
+  Tor identity.
 
 ## Lane rotation
 
@@ -175,6 +200,12 @@ A lane is rotated when any configured condition is met:
 Rotation increments the lane epoch and creates new SOCKS credentials. Existing
 `Proxy` values remain immutable, but their old credentials are no longer
 returned by subsequent pool selections.
+
+`Pool::retire(lane)` immediately removes the lane from the ready set and queues
+its rotation on the pool manager. Until rotation finishes, `next_proxy()` skips
+that lane and `proxy_for()` returns `PoolError::LaneUnavailable` if its session
+maps to the lane. The call does not revoke already returned `Proxy` values or
+clients built from them.
 
 An assignment means that the pool returned a `Proxy`; it does not prove that an
 HTTP request was sent.
@@ -201,8 +232,10 @@ Call `snapshot()` again to observe newer state.
 ## Configuration levels and delivery
 
 `torlane` provides a managed pool API and a lower-level Tor configuration API.
-Both paths eventually produce a validated `TorConfig`, but they assign
-responsibility for the runtime topology differently.
+Both paths produce a `TorConfig`, but they assign responsibility for runtime
+topology and final validation differently. The managed path automatically runs
+`tor --verify-config`; the low-level path requires an explicit verification
+call if validation before process startup is desired.
 
 ### Managed pool with `TorPolicy`
 
@@ -248,6 +281,12 @@ deliberately owns the settings required by the pool topology:
 Consequently, `TorPolicy` does not expose `ControlConfig`, `SocksConfig`, or
 raw Tor options. This prevents a policy from replacing settings on which pool
 startup, isolation, restart, and shutdown depend.
+
+Most individual settings inside the typed policy configs are optional. Values
+left unset are omitted from the generated configuration, so the selected Tor
+binary applies its own defaults. Explicit helpers such as
+`NetworkConfig::ipv4_only()` pin behavior instead of deferring it to the
+installed Tor version.
 
 The managed construction path is:
 
@@ -329,7 +368,7 @@ already selected lane into `reqwest` configuration:
 
 ```toml
 [dependencies]
-torlane = { version = "0.1", features = ["reqwest"] }
+torlane = { git = "https://github.com/muteskay/torlane.git", features = ["reqwest"] }
 ```
 
 ```rust,no_run
@@ -342,8 +381,16 @@ let pool = Pool::builder().work_dir("./.torlane").lanes(4).build().await?;
 // Round-robin: a fresh client per selected lane.
 let proxy = pool.next_proxy()?;
 let client = proxy.reqwest_client()?;
-let response = client.get("https://check.torproject.org/api/ip").send().await?;
-println!("lane={} epoch={} status={}", proxy.lane().0, proxy.epoch(), response.status());
+let response = client.get("https://api.ipify.org").send().await?;
+let status = response.status();
+let exit_ip = response.text().await?;
+println!(
+    "lane={} epoch={} status={} exit_ip={}",
+    proxy.lane().0,
+    proxy.epoch(),
+    status,
+    exit_ip.trim(),
+);
 
 // Sticky session with a caller-supplied builder.
 let sticky = pool.proxy_for("customer-42")?;
@@ -357,8 +404,9 @@ let sticky_client = sticky.configure_reqwest(builder)?.build()?;
 - `Proxy::reqwest_proxy()` builds a standalone `reqwest::Proxy` rule;
 - `Proxy::configure_reqwest(builder)` adds that rule to a caller-supplied
   `reqwest::ClientBuilder`, keeping its other settings;
-- `Proxy::reqwest_client()` is the round-robin/sticky shorthand for the two
-  calls above.
+- `Proxy::reqwest_client()` constructs a client for an already selected
+  `Proxy`; proxy selection itself still happens through `next_proxy()` or
+  `proxy_for()`.
 
 The adapter uses the `socks5h` scheme, so hostnames are resolved by Tor, not
 locally, and it passes the lane's username/password as SOCKS5 credentials
@@ -370,8 +418,7 @@ out by later `next_proxy()`/`proxy_for()` calls, an already built client keeps
 using its old lane credentials and open connections, and building a client
 does not itself count as an assignment. Reuse one client for the HTTP session
 that should share a lane identity, and get a new `Proxy`/client when the
-application is ready to accept a new epoch. See the `torlane::Proxy`
-module-level docs (built with `--features reqwest`) for the full contract.
+application is ready to accept a new epoch.
 
 `reqwest::Proxy`'s own `Debug` output prints the lane password in clear text,
 unlike `torlane`'s types. Keep the value returned by `reqwest_proxy()` out of
@@ -399,8 +446,8 @@ SOCKS5 client that supports username/password authentication and remote DNS.
 
 ```text
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
 ```
 
 The integration tests use local mock Control Port and SOCKS servers. Some
