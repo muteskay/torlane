@@ -36,27 +36,6 @@ impl PoolConfig {
         self
     }
 
-    /// Deprecated alias for `with_rotation(RotationPolicy::new().after(ttl))`.
-    #[deprecated(
-        since = "0.2.0",
-        note = "use `PoolConfig::with_rotation` and `RotationPolicy::after` instead"
-    )]
-    pub fn lane_ttl(mut self, ttl: Duration) -> Self {
-        self.rotation.set_duration(ttl);
-        self
-    }
-
-    /// Deprecated alias for
-    /// `with_rotation(RotationPolicy::new().after_assignments(n))`.
-    #[deprecated(
-        since = "0.2.0",
-        note = "use `PoolConfig::with_rotation` and `RotationPolicy::after_assignments` instead"
-    )]
-    pub fn lane_max_assignments(mut self, assignments: u64) -> Self {
-        self.rotation.set_assignment_limit(assignments);
-        self
-    }
-
     /// The number of logical lanes.
     pub fn lanes(&self) -> usize {
         self.lanes

@@ -89,15 +89,6 @@ impl TorIdentityPool {
         self.identities.get(index)
     }
 
-    /// Deprecated alias for [`TorIdentityPool::isolated_identity`].
-    #[deprecated(
-        since = "0.2.0",
-        note = "use `TorIdentityPool::isolated_identity` instead"
-    )]
-    pub fn get(&self, index: usize) -> Option<&TorIdentity> {
-        self.isolated_identity(index)
-    }
-
     /// All identities in this pool.
     pub fn identities(&self) -> &[TorIdentity] {
         &self.identities

@@ -21,12 +21,6 @@ impl Proxy {
         self.inner.lane
     }
 
-    /// Deprecated alias for [`Proxy::lane_id`].
-    #[deprecated(since = "0.2.0", note = "use `Proxy::lane_id` instead")]
-    pub fn lane(&self) -> LaneId {
-        self.lane_id()
-    }
-
     /// The lane's rotation epoch at the time this `Proxy` was selected.
     pub fn epoch(&self) -> u64 {
         self.inner.epoch

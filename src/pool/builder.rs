@@ -65,27 +65,6 @@ impl PoolBuilder {
         self
     }
 
-    /// Deprecated alias for `rotation(RotationPolicy::new().after(ttl))`.
-    #[deprecated(
-        since = "0.2.0",
-        note = "use `PoolBuilder::rotation` and `RotationPolicy::after` instead"
-    )]
-    pub fn lane_ttl(mut self, ttl: Duration) -> Self {
-        self.pool_config.rotation.set_duration(ttl);
-        self
-    }
-
-    /// Deprecated alias for
-    /// `rotation(RotationPolicy::new().after_assignments(n))`.
-    #[deprecated(
-        since = "0.2.0",
-        note = "use `PoolBuilder::rotation` and `RotationPolicy::after_assignments` instead"
-    )]
-    pub fn lane_max_assignments(mut self, assignments: u64) -> Self {
-        self.pool_config.rotation.set_assignment_limit(assignments);
-        self
-    }
-
     /// The upper bound on Tor bootstrap time. This is an upper bound, not a
     /// fixed startup delay: [`PoolBuilder::start`] returns as soon as Tor
     /// reports full bootstrap progress. Defaults to 90 seconds.
@@ -125,11 +104,5 @@ impl PoolBuilder {
             .bootstrap_timeout(self.pool_config.bootstrap_timeout());
         let instance = TorInstance::start(instance_config.clone()).await?;
         Pool::from_instance(instance, instance_config, self.pool_config).await
-    }
-
-    /// Deprecated alias for [`PoolBuilder::start`].
-    #[deprecated(since = "0.2.0", note = "use `PoolBuilder::start` instead")]
-    pub async fn build(self) -> Result<Pool, Error> {
-        self.start().await
     }
 }

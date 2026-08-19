@@ -62,14 +62,6 @@ impl RotationPolicy {
         self.assignment_limit
     }
 
-    pub(crate) fn set_duration(&mut self, duration: Duration) {
-        self.duration = Some(duration);
-    }
-
-    pub(crate) fn set_assignment_limit(&mut self, count: u64) {
-        self.assignment_limit = Some(count);
-    }
-
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         if self.duration == Some(Duration::ZERO) {
             return Err(ConfigError::ZeroRotationDuration);

@@ -93,12 +93,6 @@ impl Pool {
         self.proxy_from_endpoint(Arc::clone(&ready.lanes[index]))
     }
 
-    /// Deprecated alias for [`Pool::next`].
-    #[deprecated(since = "0.2.0", note = "use `Pool::next` instead")]
-    pub fn next_proxy(&self) -> Result<Proxy, Error> {
-        self.next()
-    }
-
     /// Selects a lane deterministically from `key`.
     ///
     /// The same key always maps to the same `LaneId`, which is useful for
@@ -120,12 +114,6 @@ impl Pool {
         self.proxy_from_endpoint(endpoint)
     }
 
-    /// Deprecated alias for [`Pool::for_key`].
-    #[deprecated(since = "0.2.0", note = "use `Pool::for_key` instead")]
-    pub fn proxy_for(&self, session: &str) -> Result<Proxy, Error> {
-        self.for_key(session.as_bytes())
-    }
-
     /// Rotates `lane` and waits for the new epoch to be published and
     /// ready.
     ///
@@ -137,17 +125,6 @@ impl Pool {
         let (response, receiver) = oneshot::channel();
         self.queue_rotation(lane, Some(response))?;
         receiver.await.map_err(|_| Error::Closed)?
-    }
-
-    /// Deprecated alias for [`Pool::rotate`] that only queues rotation and
-    /// returns immediately, without waiting for the new epoch to be
-    /// published or ready.
-    #[deprecated(
-        since = "0.2.0",
-        note = "use `Pool::rotate(lane).await` for a completion guarantee"
-    )]
-    pub fn retire(&self, lane: LaneId) -> Result<(), Error> {
-        self.queue_rotation(lane, None)
     }
 
     fn queue_rotation(
@@ -664,11 +641,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)]
-    async fn retire_queues_rotation_without_waiting() {
+    async fn queue_rotation_without_response_rotates_without_waiting() {
         let pool = Pool::for_test(PoolConfig::new(3), address()).unwrap();
 
-        pool.retire(LaneId(1)).unwrap();
+        pool.queue_rotation(LaneId(1), None).unwrap();
         assert!(
             read_lock(&pool.inner.ready)
                 .lanes
@@ -727,12 +703,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)]
     async fn sticky_session_does_not_fall_back_when_lane_is_unavailable() {
         let pool = Pool::for_test(PoolConfig::new(4), address()).unwrap();
         let session = "fixed-session";
         let lane = pool.for_key(session).unwrap().lane_id();
-        pool.retire(lane).unwrap();
+        pool.queue_rotation(lane, None).unwrap();
 
         assert!(matches!(
             pool.for_key(session),
