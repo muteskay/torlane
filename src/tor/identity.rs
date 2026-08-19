@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::TryRng;
+use rand::rngs::SysRng;
 
 use crate::pool::SocksAuth;
 use crate::tor::error::TorIdentityError;
@@ -111,7 +111,7 @@ fn random_hex(bytes: usize) -> Result<String, TorIdentityError> {
 }
 
 fn secure_random(bytes: &mut [u8]) -> Result<(), TorIdentityError> {
-    OsRng.try_fill_bytes(bytes)?;
+    SysRng.try_fill_bytes(bytes)?;
     Ok(())
 }
 

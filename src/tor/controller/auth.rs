@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::TryRng;
 use sha2::Sha256;
 
 use super::client::ControlClient;
@@ -81,7 +81,7 @@ impl ControlClient {
     ) -> Result<(), TorControlError> {
         let cookie = read_cookie(cookie_file.as_ref()).await?;
         let mut client_nonce = [0_u8; NONCE_LEN];
-        rand::rngs::OsRng.try_fill_bytes(&mut client_nonce)?;
+        rand::rngs::SysRng.try_fill_bytes(&mut client_nonce)?;
 
         let challenge = self
             .command_success(format!(

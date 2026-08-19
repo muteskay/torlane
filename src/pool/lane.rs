@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rand::RngCore;
+use rand::TryRng;
 
 use crate::pool::LaneError;
 use crate::tor::instance::InstanceId;
@@ -113,7 +113,7 @@ impl Lane {
 pub(crate) fn generate_lane_auth(id: LaneId, epoch: u64) -> Result<SocksAuth, LaneError> {
     let username: Arc<str> = Arc::from(format!("lane-{:06}-{:08}", id.0, epoch));
     let mut random = [0_u8; PASSWORD_BYTES];
-    rand::rngs::OsRng.try_fill_bytes(&mut random)?;
+    rand::rngs::SysRng.try_fill_bytes(&mut random)?;
     let password: Arc<str> = Arc::from(hex_encode(&random));
     Ok(SocksAuth { username, password })
 }

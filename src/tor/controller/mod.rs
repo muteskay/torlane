@@ -93,7 +93,7 @@ pub enum TorControlError {
 
     /// Generating a random SAFECOOKIE nonce failed.
     #[error("failed to generate SAFECOOKIE nonce: {0}")]
-    Random(#[from] rand::Error),
+    Random(#[from] rand::rngs::SysError),
 
     /// Tor did not report full bootstrap progress within the configured
     /// timeout.

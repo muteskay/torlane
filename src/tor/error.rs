@@ -76,7 +76,7 @@ pub enum TorIdentityError {
 
     /// Reading secure random bytes for a credential failed.
     #[error("failed to read secure random bytes: {0}")]
-    Random(#[from] rand::Error),
+    Random(#[from] rand::rngs::SysError),
 }
 
 /// Spawning or communicating with a [`TorProcess`](crate::low_level::TorProcess) failed.

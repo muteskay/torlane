@@ -4,5 +4,5 @@ pub(crate) enum LaneError {
     EpochOverflow(u32),
 
     #[error("failed to generate lane credentials: {0}")]
-    Random(#[from] rand::Error),
+    Random(#[from] rand::rngs::SysError),
 }
