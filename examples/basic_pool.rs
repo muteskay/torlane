@@ -41,14 +41,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(first.lane_id(), second.lane_id());
     println!("Sticky session customer-42 -> lane={}", first.lane_id().0);
 
-    let snapshot = pool.snapshot();
-    println!(
-        "Tor PID={:?}, SOCKS={}, ready lanes={}",
-        snapshot.instance().pid(),
-        snapshot.instance().socks_addr(),
-        snapshot.ready_lane_count(),
-    );
-
     pool.rotate(first.lane_id()).await?;
     println!("Rotated lane={}", first.lane_id().0);
 

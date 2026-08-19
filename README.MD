@@ -24,7 +24,6 @@ logical identities without starting one Tor process per identity.
 - explicit, TTL-based, and assignment-based lane rotation with an awaited
   completion guarantee;
 - manual Tor process restart;
-- immutable pool state snapshots;
 - credentials that are private by default and redacted in `Debug`/`Display`.
 
 ## Requirements
@@ -78,13 +77,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     pool.rotate(proxy.lane_id()).await?;
 
-    let snapshot = pool.snapshot();
-    println!(
-        "Tor PID: {:?}, ready lanes: {}",
-        snapshot.instance().pid(),
-        snapshot.ready_lane_count(),
-    );
-
     pool.shutdown().await?;
     Ok(())
 }
@@ -116,7 +108,7 @@ configuration delivery through stdin. `work_dir` is required and supplied to
 ## Runnable example
 
 The repository includes a complete example that demonstrates round-robin and
-sticky selection, snapshots, lane rotation, and orderly shutdown:
+sticky selection, lane rotation, and orderly shutdown:
 
 ```text
 cargo run --example basic_pool
@@ -233,17 +225,6 @@ clones, is safe. After shutdown, `next()`, `for_key()`, `rotate()`, and
 `restart()` return `Error::Closed`. Controller ownership and process drop
 handling also reduce the risk of leaving an orphan Tor process.
 
-## Snapshots
-
-`Pool::snapshot()` returns an immutable point-in-time view. Its accessors
-give:
-
-- `instance()` — Tor PID, SOCKS address, generation, and manual restart count;
-- `lanes()` — every lane's ID, epoch, state, assignment count, and age;
-- `ready_lane_count()` / `unavailable_lane_count()`.
-
-Call `snapshot()` again to observe newer state.
-
 ## Module layout
 
 The crate root exposes only the common managed-pool API: `Pool`,
@@ -253,8 +234,6 @@ The crate root exposes only the common managed-pool API: `Pool`,
 - `torlane::config` — `PoolConfig`, and the typed Tor policy configuration
   used by `TorPolicy` (`NetworkConfig`, `CircuitConfig`, `PaddingConfig`,
   `BridgeConfig`, `NodeSelectionConfig`, `SystemConfig`, `LoggingConfig`);
-- `torlane::snapshot` — `PoolSnapshot`, `InstanceSnapshot`, `LaneSnapshot`,
-  `LaneState`;
 - `torlane::low_level` — process management, raw Tor configuration, Control
   Port access, verification, and Tor version detection.
 
@@ -436,7 +415,7 @@ locally, and it passes the lane's username/password as SOCKS5 credentials
 (not HTTP `Proxy-Authorization`). Credentials are applied internally: callers
 never need to call `Proxy::expose_password()` themselves to use `reqwest`.
 
-Every built `reqwest::Client` is bound to the `Proxy` snapshot it came from:
+Every built `reqwest::Client` is bound to the `Proxy` value it came from:
 rotation (TTL, assignment limit, `Pool::rotate()`) only affects lanes handed
 out by later `next()`/`for_key()` calls, an already built client keeps
 using its old lane credentials and open connections, and building a client
@@ -465,7 +444,7 @@ include:
 - private fields on the individual typed `TorPolicy` configs (`NetworkConfig`,
   `CircuitConfig`, `PaddingConfig`, `BridgeConfig`, `NodeSelectionConfig`,
   `SystemConfig`, `LoggingConfig`) or on low-level `torc`/`controller` types —
-  `TorPolicy` itself and the managed pool/snapshot types are closed, but
+  `TorPolicy` itself and the managed pool types are closed, but
   these nested and low-level types still use public fields for this
   iteration.
 

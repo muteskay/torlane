@@ -7,7 +7,7 @@ use crate::pool::{LaneEndpoint, LaneId};
 /// A selected SOCKS5 lane, returned by [`Pool::next`](crate::Pool::next) and
 /// [`Pool::for_key`](crate::Pool::for_key).
 ///
-/// A `Proxy` is an immutable snapshot of one lane epoch: rotating the lane
+/// A `Proxy` is bound to one immutable lane epoch: rotating the lane
 /// afterward (TTL, assignment limit, or [`Pool::rotate`](crate::Pool::rotate))
 /// does not change or invalidate an already returned `Proxy`.
 #[derive(Debug, Clone)]
@@ -84,11 +84,11 @@ impl fmt::Display for SocksUrl {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReadySnapshot {
+pub(crate) struct ReadyLanes {
     pub(crate) lanes: Arc<[Arc<LaneEndpoint>]>,
 }
 
-impl ReadySnapshot {
+impl ReadyLanes {
     pub(crate) fn empty() -> Self {
         Self {
             lanes: Arc::from([]),

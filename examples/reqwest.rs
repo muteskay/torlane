@@ -68,13 +68,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sticky.lane_id().0
     );
 
-    let snapshot = pool.snapshot();
-    println!(
-        "Tor PID: {:?}, ready lanes: {}",
-        snapshot.instance().pid(),
-        snapshot.ready_lane_count(),
-    );
-
     pool.shutdown().await?;
     Ok(())
 }

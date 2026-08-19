@@ -8,10 +8,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::Error;
 use crate::pool::select::stable_lane_index;
-use crate::pool::snapshot::PublishedSnapshot;
 use crate::pool::{
-    InstanceSnapshot, Lane, LaneId, LaneState, PoolBuilder, PoolConfig, PoolSnapshot, Proxy,
-    ReadySnapshot, rotate_lane,
+    Lane, LaneId, LaneState, PoolBuilder, PoolConfig, Proxy, ReadyLanes, rotate_lane,
 };
 use crate::tor::instance::{InstanceConfig, InstanceId, TorInstance};
 
@@ -27,9 +25,8 @@ pub struct Pool {
 
 struct PoolInner {
     config: PoolConfig,
-    ready: Arc<RwLock<Arc<ReadySnapshot>>>,
+    ready: Arc<RwLock<Arc<ReadyLanes>>>,
     unavailable: Arc<RwLock<HashSet<LaneId>>>,
-    snapshot: Arc<RwLock<PublishedSnapshot>>,
     cursor: AtomicUsize,
     closed: AtomicBool,
     manager: mpsc::UnboundedSender<ManagerCommand>,
@@ -52,9 +49,8 @@ enum ManagerCommand {
 struct ManagerState {
     config: PoolConfig,
     lanes: Vec<Lane>,
-    ready: Arc<RwLock<Arc<ReadySnapshot>>>,
+    ready: Arc<RwLock<Arc<ReadyLanes>>>,
     unavailable: Arc<RwLock<HashSet<LaneId>>>,
-    snapshot: Arc<RwLock<PublishedSnapshot>>,
     runtime: RuntimeState,
     instance: Option<TorInstance>,
     instance_config: Option<InstanceConfig>,
@@ -63,10 +59,7 @@ struct ManagerState {
 #[derive(Clone, Copy)]
 struct RuntimeState {
     id: InstanceId,
-    pid: Option<u32>,
     socks_addr: SocketAddr,
-    generation: u64,
-    restart_count: u64,
 }
 
 impl Pool {
@@ -148,7 +141,7 @@ impl Pool {
             .filter(|endpoint| endpoint.lane != lane)
             .cloned()
             .collect();
-        *write_lock(&self.inner.ready) = Arc::new(ReadySnapshot {
+        *write_lock(&self.inner.ready) = Arc::new(ReadyLanes {
             lanes: Arc::from(filtered),
         });
 
@@ -162,11 +155,6 @@ impl Pool {
             return Err(Error::Closed);
         }
         Ok(())
-    }
-
-    /// Returns an immutable, point-in-time view of the pool's state.
-    pub fn snapshot(&self) -> PoolSnapshot {
-        read_lock(&self.inner.snapshot).current()
     }
 
     /// Stops and restarts the managed Tor process, refreshes the SOCKS
@@ -234,10 +222,7 @@ impl Pool {
     ) -> Result<Self, Error> {
         let runtime = RuntimeState {
             id: instance.id,
-            pid: instance.process_id(),
             socks_addr: instance.socks_addr(),
-            generation: 1,
-            restart_count: 0,
         };
         let lanes = match create_lanes(&config, runtime.socks_addr, runtime.id) {
             Ok(lanes) => lanes,
@@ -263,18 +248,13 @@ impl Pool {
         instance_config: Option<InstanceConfig>,
     ) -> Self {
         let unavailable = Arc::new(RwLock::new(HashSet::new()));
-        let ready = Arc::new(RwLock::new(Arc::new(ready_snapshot(&lanes, &unavailable))));
-        let snapshot = Arc::new(RwLock::new(PublishedSnapshot::new(
-            instance_snapshot(runtime),
-            &lanes,
-        )));
+        let ready = Arc::new(RwLock::new(Arc::new(ready_lanes(&lanes, &unavailable))));
         let (manager, commands) = mpsc::unbounded_channel();
         let state = ManagerState {
             config,
             lanes,
             ready: Arc::clone(&ready),
             unavailable: Arc::clone(&unavailable),
-            snapshot: Arc::clone(&snapshot),
             runtime,
             instance,
             instance_config,
@@ -285,7 +265,6 @@ impl Pool {
                 config,
                 ready,
                 unavailable,
-                snapshot,
                 cursor: AtomicUsize::new(0),
                 closed: AtomicBool::new(false),
                 manager,
@@ -313,10 +292,7 @@ impl Pool {
         config.validate()?;
         let runtime = RuntimeState {
             id: InstanceId(0),
-            pid: Some(4242),
             socks_addr,
-            generation: 1,
-            restart_count: 0,
         };
         let lanes = create_lanes(&config, socks_addr, runtime.id)
             .map_err(|e| Error::Internal(Box::new(e)))?;
@@ -363,6 +339,9 @@ async fn run_manager(
 
 impl ManagerState {
     fn assign(&mut self, id: LaneId, epoch: u64) {
+        let Some(maximum) = self.config.rotation().assignment_limit() else {
+            return;
+        };
         let Some(lane) = self
             .lanes
             .iter_mut()
@@ -371,21 +350,17 @@ impl ManagerState {
             return;
         };
         lane.assignments = lane.assignments.saturating_add(1);
-        if self
-            .config
-            .rotation()
-            .assignment_limit()
-            .is_some_and(|maximum| lane.assignments >= maximum)
-            && rotate_lane(lane, self.runtime.socks_addr, self.runtime.id).is_err()
-        {
+        if lane.assignments < maximum {
+            return;
+        }
+        if rotate_lane(lane, self.runtime.socks_addr, self.runtime.id).is_err() {
             lane.state = LaneState::Failed;
         }
-        self.publish();
+        self.publish_ready();
     }
 
     fn rotate(&mut self, id: LaneId) -> Result<(), Error> {
         let Some(lane) = self.lanes.iter_mut().find(|lane| lane.id == id) else {
-            self.publish();
             return Err(Error::UnknownLane(id));
         };
         let result = match rotate_lane(lane, self.runtime.socks_addr, self.runtime.id) {
@@ -398,7 +373,7 @@ impl ManagerState {
                 Err(Error::Internal(Box::new(error)))
             }
         };
-        self.publish();
+        self.publish_ready();
         result
     }
 
@@ -416,7 +391,7 @@ impl ManagerState {
             }
         }
         if changed {
-            self.publish();
+            self.publish_ready();
         }
     }
 
@@ -425,12 +400,11 @@ impl ManagerState {
             .instance_config
             .clone()
             .ok_or(Error::RestartUnavailable)?;
-        *write_lock(&self.ready) = Arc::new(ReadySnapshot::empty());
+        *write_lock(&self.ready) = Arc::new(ReadyLanes::empty());
         write_lock(&self.unavailable).extend(self.lanes.iter().map(|lane| lane.id));
         for lane in &mut self.lanes {
             lane.state = LaneState::Retiring;
         }
-        self.publish_snapshot_only();
 
         if let Some(mut instance) = self.instance.take() {
             instance.shutdown().await.map_err(Error::Instance)?;
@@ -441,16 +415,13 @@ impl ManagerState {
                 for lane in &mut self.lanes {
                     lane.state = LaneState::Failed;
                 }
-                self.publish();
+                self.publish_ready();
                 return Err(error.into());
             }
         };
 
         self.runtime.id = instance.id;
-        self.runtime.pid = instance.process_id();
         self.runtime.socks_addr = instance.socks_addr();
-        self.runtime.generation = self.runtime.generation.saturating_add(1);
-        self.runtime.restart_count = self.runtime.restart_count.saturating_add(1);
         self.instance = Some(instance);
 
         for lane in &mut self.lanes {
@@ -460,26 +431,20 @@ impl ManagerState {
                 write_lock(&self.unavailable).remove(&lane.id);
             }
         }
-        self.publish();
+        self.publish_ready();
         Ok(())
     }
 
     async fn shutdown_instance(&mut self) -> Result<(), Error> {
-        *write_lock(&self.ready) = Arc::new(ReadySnapshot::empty());
+        *write_lock(&self.ready) = Arc::new(ReadyLanes::empty());
         if let Some(mut instance) = self.instance.take() {
             instance.shutdown().await.map_err(Error::Instance)?;
         }
         Ok(())
     }
 
-    fn publish(&self) {
-        *write_lock(&self.ready) = Arc::new(ready_snapshot(&self.lanes, &self.unavailable));
-        self.publish_snapshot_only();
-    }
-
-    fn publish_snapshot_only(&self) {
-        *write_lock(&self.snapshot) =
-            PublishedSnapshot::new(instance_snapshot(self.runtime), &self.lanes);
+    fn publish_ready(&self) {
+        *write_lock(&self.ready) = Arc::new(ready_lanes(&self.lanes, &self.unavailable));
     }
 }
 
@@ -493,25 +458,15 @@ fn create_lanes(
         .collect()
 }
 
-fn ready_snapshot(lanes: &[Lane], unavailable: &RwLock<HashSet<LaneId>>) -> ReadySnapshot {
+fn ready_lanes(lanes: &[Lane], unavailable: &RwLock<HashSet<LaneId>>) -> ReadyLanes {
     let unavailable = read_lock(unavailable);
-    ReadySnapshot {
+    ReadyLanes {
         lanes: lanes
             .iter()
             .filter(|lane| lane.state == LaneState::Ready && !unavailable.contains(&lane.id))
             .map(|lane| Arc::clone(&lane.endpoint))
             .collect::<Vec<_>>()
             .into(),
-    }
-}
-
-fn instance_snapshot(runtime: RuntimeState) -> InstanceSnapshot {
-    InstanceSnapshot {
-        id: runtime.id,
-        pid: runtime.pid,
-        socks_addr: runtime.socks_addr,
-        generation: runtime.generation,
-        restart_count: runtime.restart_count,
     }
 }
 
@@ -575,9 +530,6 @@ mod tests {
                 .len(),
             16
         );
-        let snapshot = pool.snapshot();
-        assert_eq!(snapshot.ready_lane_count(), 16);
-        assert_eq!(snapshot.unavailable_lane_count(), 0);
         pool.shutdown().await.unwrap();
     }
 
@@ -633,10 +585,6 @@ mod tests {
         assert!(!Arc::ptr_eq(&after[&LaneId(1)], &stale));
         assert_eq!(stale.epoch, 1);
 
-        let snapshot = pool.snapshot();
-        assert_eq!(snapshot.ready_lane_count(), 3);
-        assert_eq!(snapshot.lanes()[1].epoch(), 2);
-        assert_eq!(snapshot.lanes()[1].state(), LaneState::Ready);
         pool.shutdown().await.unwrap();
     }
 
@@ -651,10 +599,12 @@ mod tests {
                 .iter()
                 .all(|endpoint| endpoint.lane != LaneId(1))
         );
-        wait_for(&pool, |snapshot| {
-            snapshot.ready_lane_count() == 3
-                && snapshot.lanes()[1].epoch() == 2
-                && snapshot.lanes()[1].state() == LaneState::Ready
+        wait_for(&pool, |ready| {
+            ready.lanes.len() == 3
+                && ready
+                    .lanes
+                    .iter()
+                    .any(|endpoint| endpoint.lane == LaneId(1) && endpoint.epoch == 2)
         })
         .await;
         pool.shutdown().await.unwrap();
@@ -668,11 +618,17 @@ mod tests {
 
         sleep(Duration::from_millis(60)).await;
         pool.rotate(LaneId(0)).await.unwrap();
-        wait_for(&pool, |snapshot| snapshot.lanes()[1].epoch() == 2).await;
+        wait_for(&pool, |ready| {
+            ready
+                .lanes
+                .iter()
+                .any(|endpoint| endpoint.lane == LaneId(1) && endpoint.epoch == 2)
+        })
+        .await;
 
-        let snapshot = pool.snapshot();
-        assert_eq!(snapshot.lanes()[0].epoch(), 2);
-        assert_eq!(snapshot.lanes()[1].epoch(), 2);
+        let ready = endpoints_by_lane(&pool);
+        assert_eq!(ready[&LaneId(0)].epoch, 2);
+        assert_eq!(ready[&LaneId(1)].epoch, 2);
         pool.shutdown().await.unwrap();
     }
 
@@ -685,7 +641,7 @@ mod tests {
         let second = pool.next().unwrap();
         assert_eq!(first.epoch(), 1);
         assert_eq!(second.epoch(), 1);
-        wait_for(&pool, |snapshot| snapshot.lanes()[0].epoch() == 2).await;
+        wait_for(&pool, |ready| ready.lanes[0].epoch == 2).await;
 
         let current = pool.next().unwrap();
         assert_eq!(current.epoch(), 2);
@@ -694,9 +650,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_ready_snapshot_returns_no_ready_lanes() {
+    async fn empty_ready_set_returns_no_ready_lanes() {
         let pool = Pool::for_test(PoolConfig::new(1), address()).unwrap();
-        *write_lock(&pool.inner.ready) = Arc::new(ReadySnapshot::empty());
+        *write_lock(&pool.inner.ready) = Arc::new(ReadyLanes::empty());
 
         assert!(matches!(pool.next(), Err(Error::NoReadyLanes)));
         pool.shutdown().await.unwrap();
@@ -748,11 +704,11 @@ mod tests {
             .collect()
     }
 
-    async fn wait_for(pool: &Pool, predicate: impl Fn(&PoolSnapshot) -> bool) {
+    async fn wait_for(pool: &Pool, predicate: impl Fn(&ReadyLanes) -> bool) {
         timeout(Duration::from_secs(2), async {
             loop {
-                let snapshot = pool.snapshot();
-                if predicate(&snapshot) {
+                let ready = read_lock(&pool.inner.ready).clone();
+                if predicate(&ready) {
                     return;
                 }
                 sleep(Duration::from_millis(5)).await;

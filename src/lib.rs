@@ -46,7 +46,6 @@
 //! explicitly named namespace:
 //!
 //! - [`config`] — managed pool and typed Tor policy configuration;
-//! - [`snapshot`] — read-only pool and lane state;
 //! - [`low_level`] — process management, raw Tor configuration, Control
 //!   Port access, verification, and Tor version detection, for
 //!   applications that need direct control over a piece [`Pool`] normally
@@ -61,7 +60,6 @@ mod tor;
 
 pub mod config;
 pub mod low_level;
-pub mod snapshot;
 
 pub use error::Error;
 pub use pool::{LaneId, Pool, PoolBuilder, Proxy, SocksUrl};

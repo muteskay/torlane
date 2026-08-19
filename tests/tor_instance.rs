@@ -34,11 +34,6 @@ async fn pool_builder_starts_instance_and_creates_requested_lanes() {
         .await
         .unwrap();
 
-    let snapshot = pool.snapshot();
-    assert_eq!(snapshot.lanes().len(), 4);
-    assert_eq!(snapshot.ready_lane_count(), 4);
-    assert_eq!(snapshot.instance().generation(), 1);
-    assert_eq!(snapshot.instance().restart_count(), 0);
     assert_eq!(
         (0..6)
             .map(|_| pool.next().unwrap().lane_id())
@@ -53,16 +48,22 @@ async fn pool_builder_starts_instance_and_creates_requested_lanes() {
         ]
     );
 
+    let before_restart = pool.for_key("restart-check").unwrap();
+    let initial_pid = read_pid(&pid_file).await;
     pool.restart().await.unwrap();
-    let restarted = pool.snapshot();
-    assert_eq!(restarted.instance().generation(), 2);
-    assert_eq!(restarted.instance().restart_count(), 1);
-    assert!(restarted.lanes().iter().all(|lane| lane.epoch() == 2));
-    assert_eq!(restarted.ready_lane_count(), 4);
+    let after_restart = pool.for_key("restart-check").unwrap();
+    let restarted_pid = read_pid(&pid_file).await;
 
-    let pid = read_pid(&pid_file).await;
+    assert_ne!(restarted_pid, initial_pid);
+    assert_eq!(after_restart.lane_id(), before_restart.lane_id());
+    assert_eq!(after_restart.epoch(), before_restart.epoch() + 1);
+    assert_ne!(
+        after_restart.expose_password(),
+        before_restart.expose_password()
+    );
+
     pool.shutdown().await.unwrap();
-    wait_for_process_exit(pid).await;
+    wait_for_process_exit(restarted_pid).await;
     fs::remove_dir_all(root).unwrap();
 }
 

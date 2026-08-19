@@ -37,7 +37,7 @@ mod tests {
 
     use super::*;
     use crate::Pool;
-    use crate::pool::{LaneEndpoint, LaneId, LaneState, PoolConfig, SocksAuth};
+    use crate::pool::{LaneEndpoint, LaneId, PoolConfig, SocksAuth};
     use crate::tor::instance::InstanceId;
 
     enum FakeMode {
@@ -316,22 +316,6 @@ mod tests {
         SocketAddr::from((Ipv4Addr::LOCALHOST, 19050))
     }
 
-    async fn wait_for_lane(pool: &Pool, lane: LaneId, predicate: impl Fn(u64, LaneState) -> bool) {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let snapshot = pool.snapshot();
-                if let Some(found) = snapshot.lanes().iter().find(|entry| entry.id() == lane) {
-                    if predicate(found.epoch(), found.state()) {
-                        return;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("pool state did not converge");
-    }
-
     #[tokio::test]
     async fn round_robin_selection_builds_a_client_per_lane_with_matching_credentials() {
         let pool = Pool::for_test(PoolConfig::new(3), pool_test_addr()).unwrap();
@@ -383,10 +367,6 @@ mod tests {
         let next_epoch = before.epoch() + 1;
 
         pool.rotate(lane).await.unwrap();
-        wait_for_lane(&pool, lane, |epoch, state| {
-            epoch == next_epoch && state == LaneState::Ready
-        })
-        .await;
 
         // The already handed out `Proxy` — and everything built from it — must
         // stay bound to the pre-rotation epoch and credentials.
@@ -408,16 +388,11 @@ mod tests {
 
     #[tokio::test]
     async fn building_a_client_does_not_add_another_assignment() {
-        let pool = Pool::for_test(PoolConfig::new(1), pool_test_addr()).unwrap();
+        let config =
+            PoolConfig::new(1).with_rotation(crate::RotationPolicy::new().after_assignments(2));
+        let pool = Pool::for_test(config, pool_test_addr()).unwrap();
         let proxy = pool.next().unwrap();
-
-        wait_for_lane(&pool, proxy.lane_id(), |_epoch, _state| {
-            pool.snapshot()
-                .lanes()
-                .iter()
-                .any(|entry| entry.id() == proxy.lane_id() && entry.assignments() == 1)
-        })
-        .await;
+        let epoch = proxy.epoch();
 
         // None of these read the pool; they only translate the `Proxy`
         // already in hand, so the assignment count must not move.
@@ -429,16 +404,11 @@ mod tests {
             .build()
             .unwrap();
 
-        // Give any incorrect background bookkeeping a chance to run before
-        // asserting the count is still exactly the one pool selection above.
+        // Give the manager time to process the one assignment from `next()`.
+        // If building a client counted as another assignment, the lane would
+        // already have rotated before the next selection.
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let snapshot = pool.snapshot();
-        let lane = snapshot
-            .lanes()
-            .iter()
-            .find(|entry| entry.id() == proxy.lane_id())
-            .unwrap();
-        assert_eq!(lane.assignments(), 1);
+        assert_eq!(pool.next().unwrap().epoch(), epoch);
 
         pool.shutdown().await.unwrap();
     }

@@ -63,10 +63,9 @@ pub(crate) struct LaneEndpoint {
     pub(crate) auth: SocksAuth,
 }
 
-/// A lane's readiness state, as observed in a [`PoolSnapshot`](crate::snapshot::PoolSnapshot).
-#[non_exhaustive]
+/// A lane's readiness state inside the pool manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LaneState {
+pub(crate) enum LaneState {
     /// The lane is ready to be handed out.
     Ready,
     /// The lane is rotating and temporarily unavailable.
