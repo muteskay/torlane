@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::time::{sleep, timeout};
-use torlane::{SocksConfig, TorConfig, TorConfigBuilder, TorConfigSource, TorProcess};
+use torlane::low_level::{SocksConfig, TorConfig, TorConfigBuilder, TorConfigSource, TorProcess};
 
 #[tokio::test]
 async fn stdin_mode_delivers_config_and_drains_both_output_streams() {

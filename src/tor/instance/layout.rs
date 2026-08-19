@@ -51,3 +51,44 @@ fn set_private_dir(path: &std::path::Path) -> io::Result<()> {
 fn set_private_dir(_path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn unique_nanos() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn instance_layout_creates_private_runtime_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "torlane-layout-{}-{}",
+            std::process::id(),
+            unique_nanos()
+        ));
+        let stale_root = root.join("runtime");
+        fs::create_dir_all(&stale_root).unwrap();
+        let stale_port_file = stale_root.join("control.port");
+        fs::write(&stale_port_file, b"stale").unwrap();
+
+        let layout = InstanceLayout::prepare(&root).unwrap();
+
+        assert_eq!(layout.data_dir, root.join("data"));
+        assert_eq!(layout.runtime_dir, root.join("runtime"));
+        assert_eq!(layout.control_port_file, root.join("runtime/control.port"));
+        assert!(!layout.control_port_file.exists());
+
+        for path in [&layout.root, &layout.data_dir, &layout.runtime_dir] {
+            let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+}

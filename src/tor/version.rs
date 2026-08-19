@@ -3,14 +3,20 @@ use std::process::Command;
 
 use crate::tor::error::TorVersionError;
 
+/// A parsed `tor --version` output, e.g. `0.4.9.2`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TorVersion {
+    /// Major version component.
     pub major: u32,
+    /// Minor version component.
     pub minor: u32,
+    /// Patch version component.
     pub patch: u32,
+    /// Optional fourth (revision) version component.
     pub revision: Option<u32>,
 }
 
+/// Runs `tor_binary --version` and parses the reported version.
 pub async fn detect_tor_version(
     tor_binary: impl AsRef<Path>,
 ) -> Result<TorVersion, TorVersionError> {
@@ -21,6 +27,7 @@ pub async fn detect_tor_version(
     version_from_output(output)
 }
 
+/// Blocking equivalent of [`detect_tor_version`].
 pub fn detect_tor_version_sync(tor_binary: &Path) -> Result<TorVersion, TorVersionError> {
     let output = Command::new(tor_binary).arg("--version").output()?;
     version_from_output(output)

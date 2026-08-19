@@ -18,24 +18,35 @@ struct ControlCommand {
     response: oneshot::Sender<Result<ControlReply, TorControlError>>,
 }
 
+/// The parsed reply to a `PROTOCOLINFO` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtocolInfo {
+    /// Authentication methods Tor is willing to accept.
     pub auth_methods: Vec<AuthMethod>,
+    /// The path to the authentication cookie file, if cookie-based
+    /// authentication is available.
     pub cookie_file: Option<PathBuf>,
+    /// The running Tor version, if reported.
     pub tor_version: Option<String>,
 }
 
+/// A connection to a Tor Control Port.
+///
+/// Commands are serialized through a background task, so `ControlClient` is
+/// cheap to clone and safe to share across tasks.
 #[derive(Clone)]
 pub struct ControlClient {
     tx: mpsc::Sender<ControlCommand>,
 }
 
 impl ControlClient {
+    /// Connects to the Control Port at `endpoint`.
     pub async fn connect(endpoint: SocketAddr) -> Result<Self, TorControlError> {
         let stream = TcpStream::connect(endpoint).await?;
         Ok(Self::from_stream(stream))
     }
 
+    /// Wraps an already connected Control Port `TcpStream`.
     pub fn from_stream(stream: TcpStream) -> Self {
         let (read_half, write_half) = stream.into_split();
         let (tx, commands) = mpsc::channel(COMMAND_BUFFER);
@@ -45,6 +56,8 @@ impl ControlClient {
         Self { tx }
     }
 
+    /// Sends a raw control command and returns its reply, regardless of
+    /// whether the reply indicates success.
     pub async fn command(
         &self,
         command: impl Into<String>,
@@ -61,11 +74,15 @@ impl ControlClient {
         receiver.await.map_err(|_| TorControlError::ChannelClosed)?
     }
 
+    /// Requests and parses `PROTOCOLINFO`.
     pub async fn protocol_info(&self) -> Result<ProtocolInfo, TorControlError> {
         let reply = self.command_success("PROTOCOLINFO 1").await?;
         parse_protocol_info(&reply)
     }
 
+    /// Fetches `PROTOCOLINFO`, authenticates with the strongest available
+    /// method, and takes ownership of the Tor process so it exits when this
+    /// connection does.
     pub async fn authenticate_and_take_ownership(&self) -> Result<ProtocolInfo, TorControlError> {
         let protocol = self.protocol_info().await?;
         self.authenticate(&protocol).await?;
@@ -73,6 +90,8 @@ impl ControlClient {
         Ok(protocol)
     }
 
+    /// Takes ownership of the Tor process (`TAKEOWNERSHIP`) so it exits
+    /// when this connection closes, and clears any prior owning-process PID.
     pub async fn take_ownership(&self) -> Result<(), TorControlError> {
         self.command_success("TAKEOWNERSHIP").await?;
         self.command_success("RESETCONF __OwningControllerProcess")
@@ -80,6 +99,8 @@ impl ControlClient {
         Ok(())
     }
 
+    /// Polls `GETINFO status/bootstrap-phase` until Tor reports 100%
+    /// progress, or `wait_for` elapses.
     pub async fn wait_bootstrap(&self, wait_for: Duration) -> Result<(), TorControlError> {
         let wait = async {
             loop {
@@ -98,6 +119,7 @@ impl ControlClient {
             .map_err(|_| TorControlError::BootstrapTimeout)?
     }
 
+    /// Fetches every TCP SOCKS listener address currently bound by Tor.
     pub async fn socks_listeners(&self) -> Result<Vec<SocketAddr>, TorControlError> {
         let reply = self.command_success("GETINFO net/listeners/socks").await?;
         let value = reply.lines.iter().find_map(|line| match line {
@@ -114,6 +136,9 @@ impl ControlClient {
             .unwrap_or_default())
     }
 
+    /// The single TCP SOCKS listener address, or
+    /// [`TorControlError::SocksListenerCount`] if Tor is bound to zero or
+    /// more than one.
     pub async fn socks_listener(&self) -> Result<SocketAddr, TorControlError> {
         let listeners = self.socks_listeners().await?;
         if listeners.len() != 1 {

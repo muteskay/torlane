@@ -8,19 +8,29 @@ use crate::tor::process::{TorConfigSource, write_config_to_file};
 use crate::tor::torc::config::TorConfig;
 use crate::tor::torc::logging::LogDest;
 
+/// The captured output of a successful `tor --verify-config` run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TorVerifyReport {
+    /// Captured standard output.
     pub stdout: String,
+    /// Captured standard error.
     pub stderr: String,
 }
 
+/// The paths checked by [`validate_runtime_config`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TorRuntimeValidation {
+    /// The Tor binary path that was checked.
     pub tor_binary: PathBuf,
+    /// The data directory path that was checked.
     pub data_directory: PathBuf,
+    /// Every path that was checked, including transport plugin executables
+    /// and log file parent directories.
     pub checked_paths: Vec<PathBuf>,
 }
 
+/// Renders `config` with the default (stdin) delivery mode and runs `tor
+/// --verify-config` against it.
 pub fn verify_config_with(
     config: &TorConfig,
     tor_binary: &Path,
@@ -28,6 +38,8 @@ pub fn verify_config_with(
     verify_config_source_with(config, &TorConfigSource::default(), tor_binary)
 }
 
+/// Renders `config` with the given delivery `source` and runs `tor
+/// --verify-config` against it.
 pub fn verify_config_source_with(
     config: &TorConfig,
     source: &TorConfigSource,
@@ -42,6 +54,8 @@ pub fn verify_config_source_with(
     }
 }
 
+/// Runs `tor --verify-config -f torrc_file` against an already written
+/// `torrc` file.
 pub fn verify_torrc_file_with(
     torrc_file: &Path,
     tor_binary: &Path,
@@ -107,6 +121,9 @@ fn report_from_output(output: std::process::Output) -> Result<TorVerifyReport, T
     Ok(TorVerifyReport { stdout, stderr })
 }
 
+/// Checks that `tor_binary` and the paths `config` depends on (data
+/// directory, transport plugin executables, log file directories) exist and
+/// are usable, without running `tor` itself.
 pub fn validate_runtime_config(
     config: &TorConfig,
     tor_binary: &Path,
@@ -217,7 +234,7 @@ mod tests {
         let error = verify_config_with(&config, &tor).unwrap_err();
 
         match error {
-            crate::tor::TorVerifyError::Failed {
+            crate::tor::error::TorVerifyError::Failed {
                 status,
                 stdout,
                 stderr,
@@ -271,7 +288,7 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&torrc).unwrap(), config.render());
         match error {
-            crate::tor::TorVerifyError::Failed {
+            crate::tor::error::TorVerifyError::Failed {
                 status,
                 stdout,
                 stderr,

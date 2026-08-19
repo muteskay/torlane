@@ -1,10 +1,15 @@
+//! `reqwest` integration for [`Proxy`](crate::Proxy).
+
 use crate::Proxy;
 
 impl Proxy {
+    /// Builds a standalone `reqwest::Proxy` rule for this lane.
     pub fn reqwest_proxy(&self) -> Result<::reqwest::Proxy, ::reqwest::Error> {
-        ::reqwest::Proxy::all(self.socks5h_url())
+        ::reqwest::Proxy::all(self.socks5h_url().expose())
     }
 
+    /// Adds this lane's proxy rule to a caller-supplied `reqwest::ClientBuilder`,
+    /// keeping its other settings.
     pub fn configure_reqwest(
         &self,
         builder: ::reqwest::ClientBuilder,
@@ -12,6 +17,7 @@ impl Proxy {
         Ok(builder.proxy(self.reqwest_proxy()?))
     }
 
+    /// Builds a `reqwest::Client` configured to use this lane.
     pub fn reqwest_client(&self) -> Result<::reqwest::Client, ::reqwest::Error> {
         self.configure_reqwest(::reqwest::Client::builder())?
             .build()
@@ -314,8 +320,8 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let snapshot = pool.snapshot();
-                if let Some(found) = snapshot.lanes.iter().find(|entry| entry.id == lane) {
-                    if predicate(found.epoch, found.state) {
+                if let Some(found) = snapshot.lanes().iter().find(|entry| entry.id() == lane) {
+                    if predicate(found.epoch(), found.state()) {
                         return;
                     }
                 }
@@ -332,10 +338,10 @@ mod tests {
 
         let mut rules = Vec::new();
         for _ in 0..3 {
-            let proxy = pool.next_proxy().unwrap();
+            let proxy = pool.next().unwrap();
             let rule_debug = format!("{:?}", proxy.reqwest_proxy().expect("proxy rule"));
-            assert!(rule_debug.contains(&*proxy.auth().username), "{rule_debug}");
-            assert!(rule_debug.contains(&*proxy.auth().password), "{rule_debug}");
+            assert!(rule_debug.contains(proxy.username()), "{rule_debug}");
+            assert!(rule_debug.contains(proxy.expose_password()), "{rule_debug}");
             // Building the client itself must succeed too, not just the rule.
             proxy.reqwest_client().expect("client");
             rules.push(rule_debug);
@@ -354,9 +360,9 @@ mod tests {
         let pool = Pool::for_test(PoolConfig::new(4), pool_test_addr()).unwrap();
         let session = "customer-42";
 
-        let first = pool.proxy_for(session).unwrap();
-        let second = pool.proxy_for(session).unwrap();
-        assert_eq!(first.lane(), second.lane());
+        let first = pool.for_key(session).unwrap();
+        let second = pool.for_key(session).unwrap();
+        assert_eq!(first.lane_id(), second.lane_id());
         assert_eq!(first.epoch(), second.epoch());
 
         let first_rule = format!("{:?}", first.reqwest_proxy().unwrap());
@@ -367,16 +373,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retire_rotates_credentials_without_mutating_the_old_proxy() {
+    async fn rotate_rotates_credentials_without_mutating_the_old_proxy() {
         let pool = Pool::for_test(PoolConfig::new(2), pool_test_addr()).unwrap();
         let session = "rotation-semantics";
 
-        let before = pool.proxy_for(session).unwrap();
+        let before = pool.for_key(session).unwrap();
         let before_rule = format!("{:?}", before.reqwest_proxy().unwrap());
-        let lane = before.lane();
+        let lane = before.lane_id();
         let next_epoch = before.epoch() + 1;
 
-        pool.retire(lane).unwrap();
+        pool.rotate(lane).await.unwrap();
         wait_for_lane(&pool, lane, |epoch, state| {
             epoch == next_epoch && state == LaneState::Ready
         })
@@ -392,8 +398,8 @@ mod tests {
 
         // A fresh selection for the same session now carries the new epoch
         // and different credentials.
-        let after = pool.proxy_for(session).unwrap();
-        assert_eq!(after.lane(), lane);
+        let after = pool.for_key(session).unwrap();
+        assert_eq!(after.lane_id(), lane);
         assert_eq!(after.epoch(), next_epoch);
         assert_ne!(format!("{:?}", after.reqwest_proxy().unwrap()), before_rule);
 
@@ -403,13 +409,13 @@ mod tests {
     #[tokio::test]
     async fn building_a_client_does_not_add_another_assignment() {
         let pool = Pool::for_test(PoolConfig::new(1), pool_test_addr()).unwrap();
-        let proxy = pool.next_proxy().unwrap();
+        let proxy = pool.next().unwrap();
 
-        wait_for_lane(&pool, proxy.lane(), |_epoch, _state| {
+        wait_for_lane(&pool, proxy.lane_id(), |_epoch, _state| {
             pool.snapshot()
-                .lanes
+                .lanes()
                 .iter()
-                .any(|entry| entry.id == proxy.lane() && entry.assignments == 1)
+                .any(|entry| entry.id() == proxy.lane_id() && entry.assignments() == 1)
         })
         .await;
 
@@ -428,11 +434,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let snapshot = pool.snapshot();
         let lane = snapshot
-            .lanes
+            .lanes()
             .iter()
-            .find(|entry| entry.id == proxy.lane())
+            .find(|entry| entry.id() == proxy.lane_id())
             .unwrap();
-        assert_eq!(lane.assignments, 1);
+        assert_eq!(lane.assignments(), 1);
 
         pool.shutdown().await.unwrap();
     }

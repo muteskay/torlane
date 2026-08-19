@@ -42,6 +42,7 @@ pub struct TorConfigBuilder {
 }
 
 impl TorConfigBuilder {
+    /// Starts a builder with no listeners and default typed policy values.
     pub fn new(data_directory: impl Into<PathBuf>) -> Self {
         Self {
             data_directory: data_directory.into(),
@@ -58,56 +59,68 @@ impl TorConfigBuilder {
         }
     }
 
+    /// Sets the Control Port.
     pub fn control(mut self, config: ControlConfig) -> Self {
         self.control = Some(config);
         self
     }
 
+    /// Sets the SOCKS listeners.
     pub fn socks(mut self, config: SocksConfig) -> Self {
         self.socks = config;
         self
     }
 
+    /// Sets the client address-family policy.
     pub fn network(mut self, config: NetworkConfig) -> Self {
         self.network = config;
         self
     }
 
+    /// Sets circuit build and timeout behavior.
     pub fn circuits(mut self, config: CircuitConfig) -> Self {
         self.circuits = config;
         self
     }
 
+    /// Sets traffic-analysis-resistance padding behavior.
     pub fn padding(mut self, config: PaddingConfig) -> Self {
         self.padding = config;
         self
     }
 
+    /// Configures bridges and their transport plugins.
     pub fn bridges(mut self, config: BridgeConfig) -> Self {
         self.bridges = Some(config);
         self
     }
 
+    /// Sets exit node selection constraints.
     pub fn node_selection(mut self, config: NodeSelectionConfig) -> Self {
         self.node_selection = config;
         self
     }
 
+    /// Sets system-level resource behavior.
     pub fn system(mut self, config: SystemConfig) -> Self {
         self.system = config;
         self
     }
 
+    /// Sets logging behavior.
     pub fn logging(mut self, config: LoggingConfig) -> Self {
         self.logging = config;
         self
     }
 
+    /// Adds a raw, untyped torrc option.
     pub fn raw_option(mut self, option: TorOption) -> Self {
         self.raw_options.push(option);
         self
     }
 
+    /// Validates the accumulated configuration and returns the final,
+    /// renderable [`TorConfig`].
     pub fn build(self) -> Result<TorConfig, TorConfigError> {
         let mut warnings = Vec::new();
 

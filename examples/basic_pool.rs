@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use torlane::Pool;
+use torlane::{Pool, RotationPolicy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,40 +13,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".torlane-example"));
 
-    let pool = Pool::builder()
+    let pool = Pool::builder(work_dir)
         .tor_binary(tor_binary)
-        .work_dir(work_dir)
         .lanes(4)
-        .lane_ttl(Duration::from_secs(10 * 60))
-        .lane_max_assignments(100)
+        .rotation(
+            RotationPolicy::new()
+                .after(Duration::from_secs(10 * 60))
+                .after_assignments(100),
+        )
         .bootstrap_timeout(Duration::from_secs(90))
-        .build()
+        .start()
         .await?;
 
     println!("Round-robin selection:");
     for _ in 0..4 {
-        let proxy = pool.next_proxy()?;
+        let proxy = pool.next()?;
         println!(
             "  lane={} epoch={} SOCKS={}",
-            proxy.lane().0,
+            proxy.lane_id().0,
             proxy.epoch(),
             proxy.addr(),
         );
     }
 
-    let first = pool.proxy_for("customer-42")?;
-    let second = pool.proxy_for("customer-42")?;
-    assert_eq!(first.lane(), second.lane());
-    println!("Sticky session customer-42 -> lane={}", first.lane().0);
+    let first = pool.for_key("customer-42")?;
+    let second = pool.for_key("customer-42")?;
+    assert_eq!(first.lane_id(), second.lane_id());
+    println!("Sticky session customer-42 -> lane={}", first.lane_id().0);
 
     let snapshot = pool.snapshot();
     println!(
         "Tor PID={:?}, SOCKS={}, ready lanes={}",
-        snapshot.instance.pid, snapshot.instance.socks_addr, snapshot.ready_lane_count,
+        snapshot.instance().pid(),
+        snapshot.instance().socks_addr(),
+        snapshot.ready_lane_count(),
     );
 
-    pool.retire(first.lane())?;
-    println!("Queued rotation for lane={}", first.lane().0);
+    pool.rotate(first.lane_id()).await?;
+    println!("Rotated lane={}", first.lane_id().0);
 
     pool.shutdown().await?;
     Ok(())

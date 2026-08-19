@@ -13,12 +13,21 @@ const CLIENT_HASH_KEY: &[u8] = b"Tor safe cookie authentication controller-to-se
 const NONCE_LEN: usize = 32;
 const COOKIE_LEN: usize = 32;
 
+/// A Control Port authentication method advertised by `PROTOCOLINFO`.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthMethod {
+    /// SAFECOOKIE: a nonce/hash exchange proving knowledge of the
+    /// authentication cookie without sending it directly.
     SafeCookie,
+    /// COOKIE: authenticate by sending the raw authentication cookie.
     Cookie,
+    /// HASHEDPASSWORD: authenticate with a password matching Tor's
+    /// configured hash.
     HashedPassword,
+    /// NULL: no authentication required.
     Null,
+    /// An authentication method not recognized by `torlane`.
     Unknown(String),
 }
 
@@ -35,6 +44,8 @@ impl AuthMethod {
 }
 
 impl ControlClient {
+    /// Authenticates using the strongest method `protocol` advertises
+    /// (SAFECOOKIE, then COOKIE, then NULL).
     pub async fn authenticate(&self, protocol: &ProtocolInfo) -> Result<(), TorControlError> {
         if protocol.auth_methods.contains(&AuthMethod::SafeCookie) {
             let cookie_file = protocol
@@ -62,6 +73,8 @@ impl ControlClient {
         ))
     }
 
+    /// Authenticates using the SAFECOOKIE nonce/hash exchange, reading the
+    /// authentication cookie from `cookie_file`.
     pub async fn authenticate_safecookie(
         &self,
         cookie_file: impl AsRef<Path>,

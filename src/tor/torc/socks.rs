@@ -4,16 +4,28 @@ use std::net::{IpAddr, Ipv4Addr};
 use crate::tor::torc::error::TorConfigError;
 use crate::tor::torc::value::PortSpec;
 
+/// A SOCKS stream isolation flag (`IsolateSOCKSAuth`, `SessionGroup`, etc.),
+/// controlling which streams Tor may share a circuit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Isolation {
+    /// Isolate streams by client source address.
     IsolateClientAddr,
+    /// Do not isolate streams by client source address.
     NoIsolateClientAddr,
+    /// Isolate streams by SOCKS username/password.
     IsolateSocksAuth,
+    /// Do not isolate streams by SOCKS username/password.
     NoIsolateSocksAuth,
+    /// Isolate streams by the client protocol used (SOCKS4 vs SOCKS5).
     IsolateClientProtocol,
+    /// Isolate streams by destination port.
     IsolateDestPort,
+    /// Isolate streams by destination address.
     IsolateDestAddr,
+    /// Keep reusing the same circuit for streams with the same SOCKS
+    /// credentials, instead of rotating on every new stream.
     KeepAliveIsolateSocksAuth,
+    /// Isolate streams into an explicit numbered isolation group.
     SessionGroup(i32),
 }
 
@@ -33,17 +45,29 @@ impl fmt::Display for Isolation {
     }
 }
 
+/// A per-listener SOCKS behavior flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SocksFlag {
+    /// Refuse to connect to IPv4 addresses on this listener.
     NoIPv4Traffic,
+    /// Allow connecting to IPv6 addresses on this listener.
     IPv6Traffic,
+    /// Prefer IPv6 over IPv4 when both are available.
     PreferIPv6,
+    /// Refuse SOCKS4 requests that specify a hostname to resolve remotely.
     NoDNSRequest,
+    /// Refuse connections to onion services on this listener.
     NoOnionTraffic,
+    /// Only allow connections to onion services on this listener.
     OnionTrafficOnly,
+    /// Cache DNS answers seen on this listener for reuse.
     CacheDNS,
+    /// Use the DNS cache for lookups on this listener.
     UseDNSCache,
+    /// Prefer no authentication over username/password when both are
+    /// offered by the client.
     PreferSocksNoAuth,
+    /// Return extended SOCKS5 error codes instead of a generic failure.
     ExtendedErrors,
 }
 
@@ -64,19 +88,27 @@ impl fmt::Display for SocksFlag {
     }
 }
 
+/// One `SocksPort` listener: address, port, flags, and isolation settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocksPort {
+    /// The address this listener binds to.
     pub addr: IpAddr,
+    /// The port (or automatic/Unix socket) this listener binds to.
     pub port: PortSpec,
+    /// Listener-level SOCKS behavior flags.
     pub flags: Vec<SocksFlag>,
+    /// Stream isolation settings applied to this listener.
     pub isolation: Vec<Isolation>,
 }
 
 impl SocksPort {
+    /// Creates a listener bound to localhost at `port`.
     pub fn new(port: impl Into<PortSpec>) -> Self {
         Self::localhost(port)
     }
 
+    /// Creates a listener bound to `127.0.0.1` at `port`, with no flags or
+    /// isolation settings.
     pub fn localhost(port: impl Into<PortSpec>) -> Self {
         Self {
             addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -86,6 +118,9 @@ impl SocksPort {
         }
     }
 
+    /// A localhost listener with extended errors and SOCKS-auth-based
+    /// stream isolation, the configuration `torlane`'s managed pool uses
+    /// for its lanes.
     pub fn isolated_auth(port: impl Into<PortSpec>) -> Self {
         Self::localhost(port)
             .with_flag(SocksFlag::ExtendedErrors)
@@ -93,26 +128,31 @@ impl SocksPort {
             .with_isolation(Isolation::KeepAliveIsolateSocksAuth)
     }
 
+    /// [`SocksPort::isolated_auth`] with an automatically chosen port.
     pub fn isolated_auth_auto() -> Self {
         Self::isolated_auth(PortSpec::Auto)
     }
 
+    /// Sets the bind address.
     pub fn bind(mut self, addr: IpAddr) -> Self {
         self.addr = addr;
         self
     }
 
+    /// Adds a listener behavior flag.
     pub fn with_flag(mut self, flag: SocksFlag) -> Self {
         self.flags.push(flag);
         self
     }
 
+    /// Adds a stream isolation setting.
     pub fn with_isolation(mut self, isolation: Isolation) -> Self {
         self.isolation.push(isolation);
         self
     }
 }
 
+/// The set of `SocksPort` listeners for a [`TorConfig`](crate::low_level::TorConfig).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocksConfig {
     listeners: Vec<SocksPort>,
@@ -126,6 +166,7 @@ impl Default for SocksConfig {
 }
 
 impl SocksConfig {
+    /// No SOCKS listeners.
     pub fn none() -> Self {
         Self {
             listeners: Vec::new(),
@@ -133,18 +174,25 @@ impl SocksConfig {
         }
     }
 
+    /// Alias for [`SocksConfig::none`].
     pub fn new() -> Self {
         Self::none()
     }
 
+    /// One listener at `port` with SOCKS-auth-based stream isolation.
     pub fn isolated_auth(port: impl Into<PortSpec>) -> Self {
         Self::new().listener(SocksPort::isolated_auth(port))
     }
 
+    /// One listener at an automatically chosen port with SOCKS-auth-based
+    /// stream isolation.
     pub fn isolated_auth_auto() -> Self {
         Self::new().listener(SocksPort::isolated_auth_auto())
     }
 
+    /// `count` localhost listeners starting at `start_port`. Fails
+    /// (recorded and surfaced by [`TorConfigBuilder::build`](crate::low_level::TorConfigBuilder::build))
+    /// if `count` is zero or the range overflows `u16`.
     pub fn port_range(start_port: u16, count: u16) -> Self {
         if count == 0 {
             return Self {
@@ -168,11 +216,13 @@ impl SocksConfig {
         }
     }
 
+    /// Adds one listener.
     pub fn listener(mut self, listener: SocksPort) -> Self {
         self.listeners.push(listener);
         self
     }
 
+    /// The configured listeners.
     pub fn listeners(&self) -> &[SocksPort] {
         &self.listeners
     }

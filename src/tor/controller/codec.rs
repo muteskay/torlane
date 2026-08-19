@@ -2,17 +2,22 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 use super::TorControlError;
 
+/// One complete Control Port reply (a status code and its lines).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlReply {
+    /// The three-digit control protocol status code.
     pub code: u16,
+    /// The reply's body lines.
     pub lines: Vec<ControlLine>,
 }
 
 impl ControlReply {
+    /// Whether the status code indicates success (`250`).
     pub fn is_success(&self) -> bool {
         self.code == 250
     }
 
+    /// Joins the reply's lines into one human-readable message.
     pub fn message(&self) -> String {
         self.lines
             .iter()
@@ -27,13 +32,29 @@ impl ControlReply {
     }
 }
 
+/// One line within a [`ControlReply`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlLine {
+    /// A free-form text line.
     Text(String),
-    KeyValue { key: String, value: String },
-    Data { key: String, value: String },
+    /// A `key=value` line.
+    KeyValue {
+        /// The key.
+        key: String,
+        /// The value.
+        value: String,
+    },
+    /// A multi-line data block (a `key=` line followed by a dot-terminated
+    /// body), joined into one value.
+    Data {
+        /// The key.
+        key: String,
+        /// The joined body text.
+        value: String,
+    },
 }
 
+/// Reads and parses one complete control reply, or `None` at EOF.
 pub async fn read_reply<R>(reader: &mut R) -> Result<Option<ControlReply>, TorControlError>
 where
     R: AsyncBufRead + Unpin,

@@ -1,15 +1,17 @@
-pub mod builder;
-pub mod config;
-pub mod error;
-pub mod lane;
-pub mod manager;
-pub mod select;
-pub mod snapshot;
+mod builder;
+mod config;
+mod error;
+mod lane;
+mod manager;
+mod select;
+mod snapshot;
 
 pub use builder::PoolBuilder;
-pub use config::{MAX_LANES, PoolConfig};
-pub use error::{LaneError, PoolConfigError, PoolError};
-pub use lane::{Lane, LaneEndpoint, LaneId, LaneState, SocksAuth, generate_lane_auth, rotate_lane};
+pub use config::{ConfigError, MAX_LANES, PoolConfig};
+pub(crate) use error::LaneError;
+pub(crate) use lane::{Lane, LaneEndpoint, SocksAuth, rotate_lane};
+pub use lane::{LaneId, LaneState};
 pub use manager::Pool;
-pub use select::{Proxy, ReadySnapshot};
+pub(crate) use select::ReadySnapshot;
+pub use select::{Proxy, SocksUrl};
 pub use snapshot::{InstanceSnapshot, LaneSnapshot, PoolSnapshot};

@@ -11,13 +11,33 @@ use crate::tor::instance::InstanceId;
 const PASSWORD_BYTES: usize = 32;
 pub(crate) const REDACTED: &str = "<redacted>";
 
+/// A lane's canonical identifier.
+///
+/// A lane's `LaneId` is stable across rotation; only its epoch and
+/// credentials change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LaneId(pub u32);
 
+/// SOCKS5 username/password credentials for one lane epoch.
+///
+/// Not part of the public API: callers read credentials through
+/// [`Proxy::username`](crate::Proxy::username) and
+/// [`Proxy::expose_password`](crate::Proxy::expose_password), or the
+/// equivalent methods on [`TorIdentity`](crate::low_level::TorIdentity).
 #[derive(Clone, PartialEq, Eq)]
-pub struct SocksAuth {
-    pub username: Arc<str>,
-    pub password: Arc<str>,
+pub(crate) struct SocksAuth {
+    pub(crate) username: Arc<str>,
+    pub(crate) password: Arc<str>,
+}
+
+impl SocksAuth {
+    pub(crate) fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub(crate) fn expose_password(&self) -> &str {
+        &self.password
+    }
 }
 
 impl fmt::Debug for SocksAuth {
@@ -31,33 +51,42 @@ impl fmt::Debug for SocksAuth {
 }
 
 #[derive(Debug, Clone)]
-pub struct LaneEndpoint {
-    pub lane: LaneId,
-    pub epoch: u64,
-    pub instance: InstanceId,
-    pub addr: SocketAddr,
-    pub auth: SocksAuth,
+pub(crate) struct LaneEndpoint {
+    pub(crate) lane: LaneId,
+    pub(crate) epoch: u64,
+    #[allow(
+        dead_code,
+        reason = "carried for debugging/diagnostics, not read by pool logic"
+    )]
+    pub(crate) instance: InstanceId,
+    pub(crate) addr: SocketAddr,
+    pub(crate) auth: SocksAuth,
 }
 
+/// A lane's readiness state, as observed in a [`PoolSnapshot`](crate::snapshot::PoolSnapshot).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaneState {
+    /// The lane is ready to be handed out.
     Ready,
+    /// The lane is rotating and temporarily unavailable.
     Retiring,
+    /// The lane failed to rotate and will not become ready again.
     Failed,
 }
 
 #[derive(Debug)]
-pub struct Lane {
-    pub id: LaneId,
-    pub epoch: u64,
-    pub endpoint: Arc<LaneEndpoint>,
-    pub created_at: Instant,
-    pub assignments: u64,
-    pub state: LaneState,
+pub(crate) struct Lane {
+    pub(crate) id: LaneId,
+    pub(crate) epoch: u64,
+    pub(crate) endpoint: Arc<LaneEndpoint>,
+    pub(crate) created_at: Instant,
+    pub(crate) assignments: u64,
+    pub(crate) state: LaneState,
 }
 
 impl Lane {
-    pub fn new(
+    pub(crate) fn new(
         id: LaneId,
         socks_addr: SocketAddr,
         instance: InstanceId,
@@ -81,7 +110,7 @@ impl Lane {
     }
 }
 
-pub fn generate_lane_auth(id: LaneId, epoch: u64) -> Result<SocksAuth, LaneError> {
+pub(crate) fn generate_lane_auth(id: LaneId, epoch: u64) -> Result<SocksAuth, LaneError> {
     let username: Arc<str> = Arc::from(format!("lane-{:06}-{:08}", id.0, epoch));
     let mut random = [0_u8; PASSWORD_BYTES];
     rand::rngs::OsRng.try_fill_bytes(&mut random)?;
@@ -89,7 +118,7 @@ pub fn generate_lane_auth(id: LaneId, epoch: u64) -> Result<SocksAuth, LaneError
     Ok(SocksAuth { username, password })
 }
 
-pub fn rotate_lane(
+pub(crate) fn rotate_lane(
     lane: &mut Lane,
     socks_addr: SocketAddr,
     instance: InstanceId,
@@ -186,5 +215,98 @@ mod tests {
 
         assert!(!debug.contains(&*password), "{debug}");
         assert!(debug.contains(REDACTED), "{debug}");
+    }
+
+    #[test]
+    fn lane_credentials_have_stable_username_and_url_safe_entropy() {
+        let auth = generate_lane_auth(LaneId(17), 42).unwrap();
+
+        assert_eq!(auth.username.as_ref(), "lane-000017-00000042");
+        assert_eq!(auth.password.len(), 64);
+        assert!(
+            auth.password
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+    }
+
+    #[test]
+    fn generated_lane_passwords_are_unique() {
+        let passwords: std::collections::HashSet<_> = (0..256)
+            .map(|id| generate_lane_auth(LaneId(id), 1).unwrap().password)
+            .collect();
+
+        assert_eq!(passwords.len(), 256);
+    }
+
+    #[test]
+    fn new_lane_starts_ready_at_epoch_one() {
+        let addr = address();
+        let lane = Lane::new(LaneId(3), addr, InstanceId(2)).unwrap();
+
+        assert_eq!(lane.id, LaneId(3));
+        assert_eq!(lane.epoch, 1);
+        assert_eq!(lane.assignments, 0);
+        assert_eq!(lane.state, LaneState::Ready);
+        assert_eq!(lane.endpoint.lane, LaneId(3));
+        assert_eq!(lane.endpoint.epoch, 1);
+        assert_eq!(lane.endpoint.instance, InstanceId(2));
+        assert_eq!(lane.endpoint.addr, addr);
+        assert_eq!(lane.endpoint.auth.username.as_ref(), "lane-000003-00000001");
+    }
+
+    #[test]
+    fn rotation_replaces_only_current_generation() {
+        let old_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 19050));
+        let new_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 29050));
+        let mut lane = Lane::new(LaneId(4), old_addr, InstanceId(1)).unwrap();
+        lane.assignments = 99;
+        let old_created_at = lane.created_at;
+        let old_endpoint = Arc::clone(&lane.endpoint);
+        let old_password = Arc::clone(&old_endpoint.auth.password);
+
+        rotate_lane(&mut lane, new_addr, InstanceId(2)).unwrap();
+
+        assert_eq!(lane.epoch, 2);
+        assert_eq!(lane.assignments, 0);
+        assert_eq!(lane.state, LaneState::Ready);
+        assert!(lane.created_at >= old_created_at);
+        assert!(!Arc::ptr_eq(&lane.endpoint, &old_endpoint));
+        assert_eq!(lane.endpoint.lane, LaneId(4));
+        assert_eq!(lane.endpoint.epoch, 2);
+        assert_eq!(lane.endpoint.instance, InstanceId(2));
+        assert_eq!(lane.endpoint.addr, new_addr);
+        assert_eq!(lane.endpoint.auth.username.as_ref(), "lane-000004-00000002");
+        assert_ne!(lane.endpoint.auth.password, old_password);
+
+        assert_eq!(old_endpoint.epoch, 1);
+        assert_eq!(old_endpoint.instance, InstanceId(1));
+        assert_eq!(old_endpoint.addr, old_addr);
+    }
+
+    #[test]
+    fn rotation_detects_epoch_overflow_without_publishing_endpoint() {
+        let addr = address();
+        let mut lane = Lane::new(LaneId(5), addr, InstanceId(1)).unwrap();
+        lane.epoch = u64::MAX;
+        let endpoint = Arc::clone(&lane.endpoint);
+
+        assert!(matches!(
+            rotate_lane(&mut lane, addr, InstanceId(1)),
+            Err(LaneError::EpochOverflow(5))
+        ));
+        assert_eq!(lane.state, LaneState::Retiring);
+        assert!(Arc::ptr_eq(&lane.endpoint, &endpoint));
+    }
+
+    #[test]
+    fn rotation_refreshes_creation_time() {
+        let addr = address();
+        let mut lane = Lane::new(LaneId(6), addr, InstanceId(1)).unwrap();
+        lane.created_at = Instant::now() - std::time::Duration::from_secs(60);
+
+        rotate_lane(&mut lane, addr, InstanceId(1)).unwrap();
+
+        assert!(lane.created_at.elapsed() < std::time::Duration::from_secs(1));
     }
 }

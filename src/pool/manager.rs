@@ -1,19 +1,25 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
+use crate::Error;
 use crate::pool::select::stable_lane_index;
 use crate::pool::snapshot::PublishedSnapshot;
 use crate::pool::{
-    InstanceSnapshot, Lane, LaneId, LaneState, PoolBuilder, PoolConfig, PoolError, PoolSnapshot,
-    Proxy, ReadySnapshot, rotate_lane,
+    InstanceSnapshot, Lane, LaneId, LaneState, PoolBuilder, PoolConfig, PoolSnapshot, Proxy,
+    ReadySnapshot, rotate_lane,
 };
 use crate::tor::instance::{InstanceConfig, InstanceId, TorInstance};
 
+/// Runs one managed Tor process and hands out isolated SOCKS5 lanes.
+///
+/// `Pool` is cheaply cloneable: every clone shares the same background
+/// manager task and Tor instance. [`Pool::shutdown`] is global across all
+/// clones and idempotent.
 #[derive(Clone)]
 pub struct Pool {
     inner: Arc<PoolInner>,
@@ -25,15 +31,22 @@ struct PoolInner {
     unavailable: Arc<RwLock<HashSet<LaneId>>>,
     snapshot: Arc<RwLock<PublishedSnapshot>>,
     cursor: AtomicUsize,
+    closed: AtomicBool,
     manager: mpsc::UnboundedSender<ManagerCommand>,
     manager_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 enum ManagerCommand {
-    Assign { lane: LaneId, epoch: u64 },
-    Retire(LaneId),
-    Restart(oneshot::Sender<Result<(), PoolError>>),
-    Shutdown(oneshot::Sender<Result<(), PoolError>>),
+    Assign {
+        lane: LaneId,
+        epoch: u64,
+    },
+    Rotate {
+        lane: LaneId,
+        response: Option<oneshot::Sender<Result<(), Error>>>,
+    },
+    Restart(oneshot::Sender<Result<(), Error>>),
+    Shutdown(oneshot::Sender<Result<(), Error>>),
 }
 
 struct ManagerState {
@@ -57,39 +70,99 @@ struct RuntimeState {
 }
 
 impl Pool {
-    pub fn builder() -> PoolBuilder {
-        PoolBuilder::default()
+    /// Starts building a managed pool rooted at `work_dir`.
+    ///
+    /// `work_dir` holds the Tor data directory and runtime files (control
+    /// port discovery file, and the generated `torrc` when
+    /// [`PoolBuilder::torrc_file`] is used).
+    pub fn builder(work_dir: impl Into<std::path::PathBuf>) -> PoolBuilder {
+        PoolBuilder::new(work_dir)
     }
 
-    pub fn next_proxy(&self) -> Result<Proxy, PoolError> {
+    /// Selects the next ready lane in round-robin order.
+    ///
+    /// Consecutive calls normally return different lanes when at least two
+    /// are ready. Performs no network I/O.
+    pub fn next(&self) -> Result<Proxy, Error> {
+        self.ensure_open()?;
         let ready = read_lock(&self.inner.ready).clone();
         if ready.lanes.is_empty() {
-            return Err(PoolError::NoReadyLanes);
+            return Err(Error::NoReadyLanes);
         }
         let index = self.inner.cursor.fetch_add(1, Ordering::Relaxed) % ready.lanes.len();
         self.proxy_from_endpoint(Arc::clone(&ready.lanes[index]))
     }
 
-    pub fn proxy_for(&self, session: &str) -> Result<Proxy, PoolError> {
-        let lane = LaneId(stable_lane_index(session, self.inner.config.lanes) as u32);
+    /// Deprecated alias for [`Pool::next`].
+    #[deprecated(since = "0.2.0", note = "use `Pool::next` instead")]
+    pub fn next_proxy(&self) -> Result<Proxy, Error> {
+        self.next()
+    }
+
+    /// Selects a lane deterministically from `key`.
+    ///
+    /// The same key always maps to the same `LaneId`, which is useful for
+    /// keeping related requests on one logical Tor identity. The mapping is
+    /// not exclusive: different keys can map to the same lane. If the
+    /// mapped lane is temporarily unavailable (for example, mid-rotation),
+    /// this returns [`Error::LaneUnavailable`] instead of silently
+    /// selecting a different lane. Performs no network I/O.
+    pub fn for_key(&self, key: impl AsRef<[u8]>) -> Result<Proxy, Error> {
+        self.ensure_open()?;
+        let lane = LaneId(stable_lane_index(key.as_ref(), self.inner.config.lanes()) as u32);
         let ready = read_lock(&self.inner.ready).clone();
         let endpoint = ready
             .lanes
             .iter()
             .find(|endpoint| endpoint.lane == lane)
             .cloned()
-            .ok_or(PoolError::LaneUnavailable(lane))?;
+            .ok_or(Error::LaneUnavailable(lane))?;
         self.proxy_from_endpoint(endpoint)
     }
 
-    pub fn retire(&self, lane: LaneId) -> Result<(), PoolError> {
-        if lane.0 as usize >= self.inner.config.lanes {
-            return Err(PoolError::UnknownLane(lane));
+    /// Deprecated alias for [`Pool::for_key`].
+    #[deprecated(since = "0.2.0", note = "use `Pool::for_key` instead")]
+    pub fn proxy_for(&self, session: &str) -> Result<Proxy, Error> {
+        self.for_key(session.as_bytes())
+    }
+
+    /// Rotates `lane` and waits for the new epoch to be published and
+    /// ready.
+    ///
+    /// Returns once the lane has a new epoch and fresh credentials, or an
+    /// error if rotation failed. The `Proxy` values already handed out for
+    /// the old epoch remain valid; only later selections observe the new
+    /// epoch.
+    pub async fn rotate(&self, lane: LaneId) -> Result<(), Error> {
+        let (response, receiver) = oneshot::channel();
+        self.queue_rotation(lane, Some(response))?;
+        receiver.await.map_err(|_| Error::Closed)?
+    }
+
+    /// Deprecated alias for [`Pool::rotate`] that only queues rotation and
+    /// returns immediately, without waiting for the new epoch to be
+    /// published or ready.
+    #[deprecated(
+        since = "0.2.0",
+        note = "use `Pool::rotate(lane).await` for a completion guarantee"
+    )]
+    pub fn retire(&self, lane: LaneId) -> Result<(), Error> {
+        self.queue_rotation(lane, None)
+    }
+
+    fn queue_rotation(
+        &self,
+        lane: LaneId,
+        response: Option<oneshot::Sender<Result<(), Error>>>,
+    ) -> Result<(), Error> {
+        self.ensure_open()?;
+        if lane.0 as usize >= self.inner.config.lanes() {
+            return Err(Error::UnknownLane(lane));
         }
 
         let current = read_lock(&self.inner.ready).clone();
         if !current.lanes.iter().any(|endpoint| endpoint.lane == lane) {
-            return Err(PoolError::LaneUnavailable(lane));
+            return Err(Error::LaneUnavailable(lane));
         }
         write_lock(&self.inner.unavailable).insert(lane);
         let filtered: Vec<_> = current
@@ -105,47 +178,83 @@ impl Pool {
         if self
             .inner
             .manager
-            .send(ManagerCommand::Retire(lane))
+            .send(ManagerCommand::Rotate { lane, response })
             .is_err()
         {
             write_lock(&self.inner.unavailable).remove(&lane);
-            return Err(PoolError::ManagerClosed);
+            return Err(Error::Closed);
         }
         Ok(())
     }
 
+    /// Returns an immutable, point-in-time view of the pool's state.
     pub fn snapshot(&self) -> PoolSnapshot {
         read_lock(&self.inner.snapshot).current()
     }
 
-    pub async fn restart(&self) -> Result<(), PoolError> {
+    /// Stops and restarts the managed Tor process, refreshes the SOCKS
+    /// address, and rotates every lane.
+    ///
+    /// Returns [`Error::RestartUnavailable`] if this pool was not created
+    /// from a managed Tor instance.
+    pub async fn restart(&self) -> Result<(), Error> {
+        self.ensure_open()?;
         let (response, receiver) = oneshot::channel();
         self.inner
             .manager
             .send(ManagerCommand::Restart(response))
-            .map_err(|_| PoolError::ManagerClosed)?;
-        receiver.await.map_err(|_| PoolError::ManagerClosed)?
+            .map_err(|_| Error::Closed)?;
+        receiver.await.map_err(|_| Error::Closed)?
     }
 
-    pub async fn shutdown(self) -> Result<(), PoolError> {
+    /// Shuts down the managed Tor process and background manager task.
+    ///
+    /// Shutdown is global across every clone of this `Pool` and idempotent:
+    /// calling it more than once (from one or many clones, concurrently or
+    /// sequentially) is safe and only performs the underlying shutdown
+    /// once. After shutdown, [`Pool::next`], [`Pool::for_key`],
+    /// [`Pool::rotate`], and [`Pool::restart`] return [`Error::Closed`].
+    pub async fn shutdown(&self) -> Result<(), Error> {
+        if self.inner.closed.swap(true, Ordering::SeqCst) {
+            self.join_manager_task().await;
+            return Ok(());
+        }
+
         let (response, receiver) = oneshot::channel();
-        self.inner
+        let result = if self
+            .inner
             .manager
             .send(ManagerCommand::Shutdown(response))
-            .map_err(|_| PoolError::ManagerClosed)?;
-        let shutdown = receiver.await.map_err(|_| PoolError::ManagerClosed)?;
+            .is_ok()
+        {
+            receiver.await.unwrap_or(Ok(()))
+        } else {
+            Ok(())
+        };
+        self.join_manager_task().await;
+        result
+    }
+
+    async fn join_manager_task(&self) {
         let task = { lock_mutex(&self.inner.manager_task).take() };
         if let Some(task) = task {
-            task.await?;
+            let _ = task.await;
         }
-        shutdown
+    }
+
+    fn ensure_open(&self) -> Result<(), Error> {
+        if self.inner.closed.load(Ordering::SeqCst) {
+            Err(Error::Closed)
+        } else {
+            Ok(())
+        }
     }
 
     pub(crate) async fn from_instance(
         mut instance: TorInstance,
         instance_config: InstanceConfig,
         config: PoolConfig,
-    ) -> Result<Self, PoolError> {
+    ) -> Result<Self, Error> {
         let runtime = RuntimeState {
             id: instance.id,
             pid: instance.process_id(),
@@ -157,7 +266,7 @@ impl Pool {
             Ok(lanes) => lanes,
             Err(error) => {
                 let _ = instance.shutdown().await;
-                return Err(error);
+                return Err(Error::Internal(Box::new(error)));
             }
         };
         Ok(Self::spawn(
@@ -184,7 +293,7 @@ impl Pool {
         )));
         let (manager, commands) = mpsc::unbounded_channel();
         let state = ManagerState {
-            config: config.clone(),
+            config,
             lanes,
             ready: Arc::clone(&ready),
             unavailable: Arc::clone(&unavailable),
@@ -201,6 +310,7 @@ impl Pool {
                 unavailable,
                 snapshot,
                 cursor: AtomicUsize::new(0),
+                closed: AtomicBool::new(false),
                 manager,
                 manager_task: Mutex::new(Some(task)),
             }),
@@ -209,20 +319,20 @@ impl Pool {
 
     fn proxy_from_endpoint(
         &self,
-        endpoint: Arc<crate::pool::LaneEndpoint>,
-    ) -> Result<Proxy, PoolError> {
+        endpoint: Arc<crate::pool::lane::LaneEndpoint>,
+    ) -> Result<Proxy, Error> {
         self.inner
             .manager
             .send(ManagerCommand::Assign {
                 lane: endpoint.lane,
                 epoch: endpoint.epoch,
             })
-            .map_err(|_| PoolError::ManagerClosed)?;
+            .map_err(|_| Error::Closed)?;
         Ok(Proxy { inner: endpoint })
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test(config: PoolConfig, socks_addr: SocketAddr) -> Result<Self, PoolError> {
+    pub(crate) fn for_test(config: PoolConfig, socks_addr: SocketAddr) -> Result<Self, Error> {
         config.validate()?;
         let runtime = RuntimeState {
             id: InstanceId(0),
@@ -231,7 +341,8 @@ impl Pool {
             generation: 1,
             restart_count: 0,
         };
-        let lanes = create_lanes(&config, socks_addr, runtime.id)?;
+        let lanes = create_lanes(&config, socks_addr, runtime.id)
+            .map_err(|e| Error::Internal(Box::new(e)))?;
         Ok(Self::spawn(config, lanes, runtime, None, None))
     }
 }
@@ -240,7 +351,7 @@ async fn run_manager(
     mut state: ManagerState,
     mut commands: mpsc::UnboundedReceiver<ManagerCommand>,
 ) {
-    let period = ttl_tick_period(state.config.lane_ttl);
+    let period = ttl_tick_period(state.config.rotation().duration());
     let mut ticker = tokio::time::interval(period);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -249,7 +360,12 @@ async fn run_manager(
             command = commands.recv() => {
                 match command {
                     Some(ManagerCommand::Assign { lane, epoch }) => state.assign(lane, epoch),
-                    Some(ManagerCommand::Retire(lane)) => state.retire(lane),
+                    Some(ManagerCommand::Rotate { lane, response }) => {
+                        let result = state.rotate(lane);
+                        if let Some(response) = response {
+                            let _ = response.send(result);
+                        }
+                    }
                     Some(ManagerCommand::Restart(response)) => {
                         let _ = response.send(state.restart().await);
                     }
@@ -280,7 +396,8 @@ impl ManagerState {
         lane.assignments = lane.assignments.saturating_add(1);
         if self
             .config
-            .lane_max_assignments
+            .rotation()
+            .assignment_limit()
             .is_some_and(|maximum| lane.assignments >= maximum)
             && rotate_lane(lane, self.runtime.socks_addr, self.runtime.id).is_err()
         {
@@ -289,19 +406,27 @@ impl ManagerState {
         self.publish();
     }
 
-    fn retire(&mut self, id: LaneId) {
-        if let Some(lane) = self.lanes.iter_mut().find(|lane| lane.id == id) {
-            if rotate_lane(lane, self.runtime.socks_addr, self.runtime.id).is_err() {
-                lane.state = LaneState::Failed;
-            } else {
-                write_lock(&self.unavailable).remove(&id);
-            }
+    fn rotate(&mut self, id: LaneId) -> Result<(), Error> {
+        let Some(lane) = self.lanes.iter_mut().find(|lane| lane.id == id) else {
             self.publish();
-        }
+            return Err(Error::UnknownLane(id));
+        };
+        let result = match rotate_lane(lane, self.runtime.socks_addr, self.runtime.id) {
+            Ok(()) => {
+                write_lock(&self.unavailable).remove(&id);
+                Ok(())
+            }
+            Err(error) => {
+                lane.state = LaneState::Failed;
+                Err(Error::Internal(Box::new(error)))
+            }
+        };
+        self.publish();
+        result
     }
 
     fn rotate_expired(&mut self) {
-        let Some(ttl) = self.config.lane_ttl else {
+        let Some(ttl) = self.config.rotation().duration() else {
             return;
         };
         let mut changed = false;
@@ -318,11 +443,11 @@ impl ManagerState {
         }
     }
 
-    async fn restart(&mut self) -> Result<(), PoolError> {
+    async fn restart(&mut self) -> Result<(), Error> {
         let config = self
             .instance_config
             .clone()
-            .ok_or(PoolError::RestartUnavailable)?;
+            .ok_or(Error::RestartUnavailable)?;
         *write_lock(&self.ready) = Arc::new(ReadySnapshot::empty());
         write_lock(&self.unavailable).extend(self.lanes.iter().map(|lane| lane.id));
         for lane in &mut self.lanes {
@@ -331,7 +456,7 @@ impl ManagerState {
         self.publish_snapshot_only();
 
         if let Some(mut instance) = self.instance.take() {
-            instance.shutdown().await?;
+            instance.shutdown().await.map_err(Error::Instance)?;
         }
         let instance = match TorInstance::start(config).await {
             Ok(instance) => instance,
@@ -362,10 +487,10 @@ impl ManagerState {
         Ok(())
     }
 
-    async fn shutdown_instance(&mut self) -> Result<(), PoolError> {
+    async fn shutdown_instance(&mut self) -> Result<(), Error> {
         *write_lock(&self.ready) = Arc::new(ReadySnapshot::empty());
         if let Some(mut instance) = self.instance.take() {
-            instance.shutdown().await?;
+            instance.shutdown().await.map_err(Error::Instance)?;
         }
         Ok(())
     }
@@ -385,9 +510,9 @@ fn create_lanes(
     config: &PoolConfig,
     socks_addr: SocketAddr,
     instance: InstanceId,
-) -> Result<Vec<Lane>, PoolError> {
-    (0..config.lanes)
-        .map(|id| Ok(Lane::new(LaneId(id as u32), socks_addr, instance)?))
+) -> Result<Vec<Lane>, crate::pool::LaneError> {
+    (0..config.lanes())
+        .map(|id| Lane::new(LaneId(id as u32), socks_addr, instance))
         .collect()
 }
 
@@ -442,6 +567,7 @@ mod tests {
     use tokio::time::{sleep, timeout};
 
     use super::*;
+    use crate::RotationPolicy;
 
     fn address() -> SocketAddr {
         SocketAddr::from((Ipv4Addr::LOCALHOST, 19050))
@@ -473,15 +599,15 @@ mod tests {
             16
         );
         let snapshot = pool.snapshot();
-        assert_eq!(snapshot.ready_lane_count, 16);
-        assert_eq!(snapshot.unavailable_lane_count, 0);
+        assert_eq!(snapshot.ready_lane_count(), 16);
+        assert_eq!(snapshot.unavailable_lane_count(), 0);
         pool.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn round_robin_cycles_through_ready_lanes() {
         let pool = Pool::for_test(PoolConfig::new(3), address()).unwrap();
-        let selected: Vec<_> = (0..8).map(|_| pool.next_proxy().unwrap().lane()).collect();
+        let selected: Vec<_> = (0..8).map(|_| pool.next().unwrap().lane_id()).collect();
 
         assert_eq!(
             selected,
@@ -502,37 +628,24 @@ mod tests {
     #[tokio::test]
     async fn sticky_mapping_is_stable() {
         let pool = Pool::for_test(PoolConfig::new(8), address()).unwrap();
-        let first = pool.proxy_for("customer-session-42").unwrap();
+        let first = pool.for_key("customer-session-42").unwrap();
 
         for _ in 0..100 {
-            let proxy = pool.proxy_for("customer-session-42").unwrap();
-            assert_eq!(proxy.lane(), first.lane());
+            let proxy = pool.for_key("customer-session-42").unwrap();
+            assert_eq!(proxy.lane_id(), first.lane_id());
             assert_eq!(proxy.epoch(), first.epoch());
         }
-        assert!(first.socks5h_url().starts_with("socks5h://lane-"));
+        assert!(first.socks5h_url().expose().starts_with("socks5h://lane-"));
         pool.shutdown().await.unwrap();
     }
 
     #[tokio::test]
-    async fn retire_rotates_only_selected_lane_and_drops_stale_generation() {
+    async fn rotate_waits_for_new_epoch_and_drops_stale_generation() {
         let pool = Pool::for_test(PoolConfig::new(3), address()).unwrap();
         let before = endpoints_by_lane(&pool);
         let stale = Arc::clone(before.get(&LaneId(1)).unwrap());
 
-        pool.retire(LaneId(1)).unwrap();
-        assert!(
-            read_lock(&pool.inner.ready)
-                .lanes
-                .iter()
-                .all(|endpoint| endpoint.lane != LaneId(1))
-        );
-        wait_for(&pool, |snapshot| {
-            snapshot.ready_lane_count == 3
-                && snapshot.lanes[1].epoch == 2
-                && snapshot.lanes[1].state == LaneState::Ready
-        })
-        .await;
-
+        pool.rotate(LaneId(1)).await.unwrap();
         let after = endpoints_by_lane(&pool);
         assert_eq!(after[&LaneId(0)].epoch, before[&LaneId(0)].epoch);
         assert_eq!(after[&LaneId(2)].epoch, before[&LaneId(2)].epoch);
@@ -542,39 +655,65 @@ mod tests {
         assert_ne!(after[&LaneId(1)].auth.password, stale.auth.password);
         assert!(!Arc::ptr_eq(&after[&LaneId(1)], &stale));
         assert_eq!(stale.epoch, 1);
+
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.ready_lane_count(), 3);
+        assert_eq!(snapshot.lanes()[1].epoch(), 2);
+        assert_eq!(snapshot.lanes()[1].state(), LaneState::Ready);
+        pool.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn retire_queues_rotation_without_waiting() {
+        let pool = Pool::for_test(PoolConfig::new(3), address()).unwrap();
+
+        pool.retire(LaneId(1)).unwrap();
+        assert!(
+            read_lock(&pool.inner.ready)
+                .lanes
+                .iter()
+                .all(|endpoint| endpoint.lane != LaneId(1))
+        );
+        wait_for(&pool, |snapshot| {
+            snapshot.ready_lane_count() == 3
+                && snapshot.lanes()[1].epoch() == 2
+                && snapshot.lanes()[1].state() == LaneState::Ready
+        })
+        .await;
         pool.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn ttl_rotates_only_expired_lane() {
-        let config = PoolConfig::new(2).lane_ttl(Duration::from_millis(100));
+        let config = PoolConfig::new(2)
+            .with_rotation(RotationPolicy::new().after(Duration::from_millis(100)));
         let pool = Pool::for_test(config, address()).unwrap();
 
         sleep(Duration::from_millis(60)).await;
-        pool.retire(LaneId(0)).unwrap();
-        wait_for(&pool, |snapshot| snapshot.lanes[0].epoch == 2).await;
-        wait_for(&pool, |snapshot| snapshot.lanes[1].epoch == 2).await;
+        pool.rotate(LaneId(0)).await.unwrap();
+        wait_for(&pool, |snapshot| snapshot.lanes()[1].epoch() == 2).await;
 
         let snapshot = pool.snapshot();
-        assert_eq!(snapshot.lanes[0].epoch, 2);
-        assert_eq!(snapshot.lanes[1].epoch, 2);
+        assert_eq!(snapshot.lanes()[0].epoch(), 2);
+        assert_eq!(snapshot.lanes()[1].epoch(), 2);
         pool.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn max_assignments_rotates_lane_without_blocking_current_proxy() {
-        let config = PoolConfig::new(1).lane_max_assignments(2);
+        let config = PoolConfig::new(1).with_rotation(RotationPolicy::new().after_assignments(2));
         let pool = Pool::for_test(config, address()).unwrap();
 
-        let first = pool.next_proxy().unwrap();
-        let second = pool.next_proxy().unwrap();
+        let first = pool.next().unwrap();
+        let second = pool.next().unwrap();
         assert_eq!(first.epoch(), 1);
         assert_eq!(second.epoch(), 1);
-        wait_for(&pool, |snapshot| snapshot.lanes[0].epoch == 2).await;
+        wait_for(&pool, |snapshot| snapshot.lanes()[0].epoch() == 2).await;
 
-        let current = pool.next_proxy().unwrap();
+        let current = pool.next().unwrap();
         assert_eq!(current.epoch(), 2);
-        assert_ne!(current.auth().password, first.auth().password);
+        assert_ne!(current.expose_password(), first.expose_password());
         pool.shutdown().await.unwrap();
     }
 
@@ -583,25 +722,50 @@ mod tests {
         let pool = Pool::for_test(PoolConfig::new(1), address()).unwrap();
         *write_lock(&pool.inner.ready) = Arc::new(ReadySnapshot::empty());
 
-        assert!(matches!(pool.next_proxy(), Err(PoolError::NoReadyLanes)));
+        assert!(matches!(pool.next(), Err(Error::NoReadyLanes)));
         pool.shutdown().await.unwrap();
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn sticky_session_does_not_fall_back_when_lane_is_unavailable() {
         let pool = Pool::for_test(PoolConfig::new(4), address()).unwrap();
         let session = "fixed-session";
-        let lane = pool.proxy_for(session).unwrap().lane();
+        let lane = pool.for_key(session).unwrap().lane_id();
         pool.retire(lane).unwrap();
 
         assert!(matches!(
-            pool.proxy_for(session),
-            Err(PoolError::LaneUnavailable(unavailable)) if unavailable == lane
+            pool.for_key(session),
+            Err(Error::LaneUnavailable(unavailable)) if unavailable == lane
         ));
         pool.shutdown().await.unwrap();
     }
 
-    fn endpoints_by_lane(pool: &Pool) -> HashMap<LaneId, Arc<crate::pool::LaneEndpoint>> {
+    #[tokio::test]
+    async fn shutdown_is_idempotent_across_clones() {
+        let pool = Pool::for_test(PoolConfig::new(2), address()).unwrap();
+        let clone = pool.clone();
+
+        let (first, second) = tokio::join!(pool.shutdown(), clone.shutdown());
+        first.unwrap();
+        second.unwrap();
+
+        // A third, later call must also succeed without hanging.
+        pool.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn operations_after_shutdown_return_closed() {
+        let pool = Pool::for_test(PoolConfig::new(2), address()).unwrap();
+        pool.shutdown().await.unwrap();
+
+        assert!(matches!(pool.next(), Err(Error::Closed)));
+        assert!(matches!(pool.for_key("x"), Err(Error::Closed)));
+        assert!(matches!(pool.rotate(LaneId(0)).await, Err(Error::Closed)));
+        assert!(matches!(pool.restart().await, Err(Error::Closed)));
+    }
+
+    fn endpoints_by_lane(pool: &Pool) -> HashMap<LaneId, Arc<crate::pool::lane::LaneEndpoint>> {
         read_lock(&pool.inner.ready)
             .lanes
             .iter()

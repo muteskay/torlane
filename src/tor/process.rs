@@ -15,19 +15,26 @@ use crate::tor::torc::error::TorWriteError;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How a rendered `torrc` is delivered to the `tor` process.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum TorConfigSource {
+    /// Pipe the rendered configuration through the child's stdin; no
+    /// `torrc` file is written.
     #[default]
     Stdin,
+    /// Write the rendered configuration to this path and launch `tor -f
+    /// <path>`.
     File(PathBuf),
 }
 
 impl TorConfigSource {
+    /// Delivers configuration through a file at `path`.
     pub fn file(path: impl Into<PathBuf>) -> Self {
         Self::File(path.into())
     }
 }
 
+/// A running (or exited) `tor` child process.
 #[derive(Debug)]
 pub struct TorProcess {
     child: Child,
@@ -36,6 +43,12 @@ pub struct TorProcess {
 }
 
 impl TorProcess {
+    /// Launches `tor_binary` with `config` delivered via `source`.
+    ///
+    /// Does not verify the configuration, authenticate a controller, or
+    /// wait for bootstrap; those are the caller's responsibility at this
+    /// level (see [`TorInstance`](crate::low_level::TorInstance) for the
+    /// managed equivalent).
     pub async fn spawn(
         tor_binary: impl AsRef<Path>,
         config: &TorConfig,
@@ -105,20 +118,24 @@ impl TorProcess {
         Self::spawn(tor_binary, config, source).await
     }
 
+    /// The child process id, if it is still running.
     pub fn id(&self) -> Option<u32> {
         self.child.id()
     }
 
+    /// Checks whether the child has exited, without blocking.
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>, TorProcessError> {
         Ok(self.child.try_wait()?)
     }
 
+    /// Waits for the child to exit, then drains its output tasks.
     pub async fn wait(&mut self) -> Result<ExitStatus, TorProcessError> {
         let status = self.child.wait().await?;
         self.finish_output_tasks().await;
         Ok(status)
     }
 
+    /// Sends a kill signal without waiting for the child to exit.
     pub fn start_kill(&mut self) -> Result<(), TorProcessError> {
         self.child.start_kill()?;
         Ok(())
@@ -129,6 +146,8 @@ impl TorProcess {
         self.start_kill()
     }
 
+    /// Requests a graceful shutdown (`SIGTERM` on Unix), falling back to a
+    /// forced kill if the process has not exited within a few seconds.
     pub async fn shutdown(&mut self) -> Result<(), TorProcessError> {
         if self.child.try_wait()?.is_none() {
             self.start_graceful_shutdown()?;
@@ -249,6 +268,8 @@ fn remove_stale_control_port_file(config: &TorConfig) -> Result<(), TorProcessEr
     }
 }
 
+/// Renders `config` and atomically writes it to `path` with private
+/// (owner-only) file permissions on Unix.
 pub fn write_config_to_file(
     config: &TorConfig,
     path: impl AsRef<Path>,

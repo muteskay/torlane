@@ -8,7 +8,7 @@ use sha2::Sha256;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::sleep;
-use torlane::{AuthMethod, ControlClient, TorControlError, wait_control_port_file};
+use torlane::low_level::{AuthMethod, ControlClient, TorControlError, wait_control_port_file};
 
 const SERVER_HASH_KEY: &[u8] = b"Tor safe cookie authentication server-to-controller hash";
 const CLIENT_HASH_KEY: &[u8] = b"Tor safe cookie authentication controller-to-server hash";

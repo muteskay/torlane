@@ -9,7 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
-use torlane::{InstanceConfig, InstanceId, Pool, TorControlError, TorInstance, TorInstanceError};
+use torlane::low_level::{
+    InstanceConfig, InstanceId, TorControlError, TorInstance, TorInstanceError,
+};
+use torlane::{LaneId, Pool};
 
 #[tokio::test]
 async fn pool_builder_starts_instance_and_creates_requested_lanes() {
@@ -23,40 +26,39 @@ async fn pool_builder_starts_instance_and_creates_requested_lanes() {
     let captured_config = root.join("captured.torrc");
     let tor_binary = fake_tor(&root, &pid_file, &captured_config, "success");
 
-    let pool = Pool::builder()
+    let pool = Pool::builder(root.join("instance"))
         .tor_binary(&tor_binary)
-        .work_dir(root.join("instance"))
         .lanes(4)
         .bootstrap_timeout(Duration::from_secs(2))
-        .build()
+        .start()
         .await
         .unwrap();
 
     let snapshot = pool.snapshot();
-    assert_eq!(snapshot.lanes.len(), 4);
-    assert_eq!(snapshot.ready_lane_count, 4);
-    assert_eq!(snapshot.instance.generation, 1);
-    assert_eq!(snapshot.instance.restart_count, 0);
+    assert_eq!(snapshot.lanes().len(), 4);
+    assert_eq!(snapshot.ready_lane_count(), 4);
+    assert_eq!(snapshot.instance().generation(), 1);
+    assert_eq!(snapshot.instance().restart_count(), 0);
     assert_eq!(
         (0..6)
-            .map(|_| pool.next_proxy().unwrap().lane())
+            .map(|_| pool.next().unwrap().lane_id())
             .collect::<Vec<_>>(),
         vec![
-            torlane::LaneId(0),
-            torlane::LaneId(1),
-            torlane::LaneId(2),
-            torlane::LaneId(3),
-            torlane::LaneId(0),
-            torlane::LaneId(1),
+            LaneId(0),
+            LaneId(1),
+            LaneId(2),
+            LaneId(3),
+            LaneId(0),
+            LaneId(1),
         ]
     );
 
     pool.restart().await.unwrap();
     let restarted = pool.snapshot();
-    assert_eq!(restarted.instance.generation, 2);
-    assert_eq!(restarted.instance.restart_count, 1);
-    assert!(restarted.lanes.iter().all(|lane| lane.epoch == 2));
-    assert_eq!(restarted.ready_lane_count, 4);
+    assert_eq!(restarted.instance().generation(), 2);
+    assert_eq!(restarted.instance().restart_count(), 1);
+    assert!(restarted.lanes().iter().all(|lane| lane.epoch() == 2));
+    assert_eq!(restarted.ready_lane_count(), 4);
 
     let pid = read_pid(&pid_file).await;
     pool.shutdown().await.unwrap();
@@ -82,7 +84,6 @@ async fn instance_starts_with_auto_ports_and_exposes_working_socks_endpoint() {
     let mut instance = TorInstance::start(config).await.unwrap();
 
     assert_eq!(instance.id, InstanceId(7));
-    assert_eq!(instance.layout.root, root.join("instance"));
     assert_ne!(instance.socks_addr().port(), 0);
     assert!(instance.process_id().is_some());
     assert!(

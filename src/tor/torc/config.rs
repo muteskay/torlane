@@ -12,15 +12,31 @@ use crate::tor::torc::render;
 use crate::tor::torc::socks::SocksConfig;
 use crate::tor::torc::system::SystemConfig;
 
+/// A non-fatal concern about a built [`TorConfig`], surfaced by
+/// [`TorConfigBuilder::build`](crate::low_level::TorConfigBuilder::build).
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TorConfigWarning {
+    /// The Control Port has no authentication, but is safely bound to
+    /// loopback only.
     UnauthenticatedLoopbackControlPort,
+    /// The Control Port uses an automatically chosen port with no
+    /// `ControlPortWriteToFile` configured, so the resolved port cannot be
+    /// discovered.
     AutoControlPortWithoutWriteFile,
+    /// [`SystemConfig::conn_limit`](crate::config::SystemConfig::conn_limit)
+    /// is unusually high.
     HighConnLimit(u32),
+    /// More than 32 SOCKS listeners are configured.
     ManySocksListeners(usize),
+    /// [`LoggingConfig::safe_logging`](crate::config::LoggingConfig::safe_logging)
+    /// is explicitly disabled, which may log sensitive values.
     UnsafeLoggingDisabled,
 }
 
+/// A fully built, renderable Tor configuration.
+///
+/// Constructed by [`TorConfigBuilder::build`](crate::low_level::TorConfigBuilder::build).
 #[derive(Debug, Clone)]
 pub struct TorConfig {
     pub(crate) data_directory: PathBuf,
@@ -69,22 +85,27 @@ impl TorConfig {
         }
     }
 
+    /// The configured `DataDirectory`.
     pub fn data_directory(&self) -> &std::path::Path {
         &self.data_directory
     }
 
+    /// The configured Control Port, if any.
     pub fn control(&self) -> Option<&ControlConfig> {
         self.control.as_ref()
     }
 
+    /// The configured SOCKS listeners.
     pub fn socks(&self) -> &SocksConfig {
         &self.socks
     }
 
+    /// Non-fatal concerns raised while building this configuration.
     pub fn warnings(&self) -> &[TorConfigWarning] {
         &self.warnings
     }
 
+    /// Renders this configuration as a `torrc` file.
     pub fn render(&self) -> String {
         render::render_config(self)
     }

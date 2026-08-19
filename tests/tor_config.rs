@@ -3,7 +3,16 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
-use torlane::*;
+use torlane::Pool;
+use torlane::config::{
+    Bridge, BridgeConfig, CircuitConfig, LogDest, LoggingConfig, NetworkConfig,
+    NodeSelectionConfig, Obfs4Bridge, PaddingConfig, Severity, SystemConfig,
+};
+use torlane::low_level::{
+    ControlConfig, Flag, Isolation, PortSpec, SocksConfig, SocksFlag, SocksPort, TorConfigBuilder,
+    TorConfigError, TorConfigWarning, TorIdentityPool, TorOption, Tristate, verify_config_with,
+    write_config_to_file,
+};
 
 #[test]
 fn value_types_render_exactly() {
@@ -151,93 +160,24 @@ fn socks_port_range_validates_count_and_overflow() {
 }
 
 #[test]
-fn runtime_config_owns_pool_topology() {
-    let root = std::env::temp_dir().join(format!(
-        "torlane-runtime-config-{}-{}",
-        std::process::id(),
-        unique_nanos()
-    ));
-    let layout = InstanceLayout::prepare(&root).unwrap();
-    let policy = TorPolicy {
-        network: NetworkConfig::dual_stack(),
-        logging: LoggingConfig::default().log(Severity::Notice, LogDest::Stdout),
-        system: SystemConfig::default().avoid_disk_writes(true),
-        ..TorPolicy::default()
-    };
-
-    let config = build_runtime_config(&policy, &layout, 4242).unwrap();
-    let rendered = config.render();
-
-    assert_eq!(count_rendered_options(&rendered, "SocksPort"), 1);
-    assert!(rendered.contains("SocksPort 127.0.0.1:auto "));
-    assert!(rendered.contains("ExtendedErrors"));
-    assert!(rendered.contains("IsolateSOCKSAuth"));
-    assert!(rendered.contains("KeepAliveIsolateSOCKSAuth"));
-    assert_eq!(count_rendered_options(&rendered, "ControlPort"), 1);
-    assert!(rendered.contains("ControlPort 127.0.0.1:auto\n"));
-    assert!(rendered.contains(&format!(
-        "ControlPortWriteToFile {}\n",
-        layout.control_port_file.display()
-    )));
-    assert!(rendered.contains("CookieAuthentication 1\n"));
-    assert!(rendered.contains("__OwningControllerProcess 4242\n"));
-    assert!(rendered.contains(&format!("DataDirectory {}\n", layout.data_dir.display())));
-    assert!(rendered.contains("ClientUseIPv6 1\n"));
-    assert!(rendered.contains("AvoidDiskWrites 1\n"));
-    assert!(rendered.contains("Log notice stdout\n"));
-    assert!(!rendered.contains("/tmp/tor/data"));
-    assert!(!rendered.contains("127.0.0.1:20300"));
-    assert!(!root.join("torrc").exists());
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
 fn pool_builder_defaults_to_stdin_config_source() {
-    let builder = Pool::builder();
+    let builder = Pool::builder("/tmp/torlane-pool-builder-test");
 
-    assert_eq!(builder.config_source(), &TorConfigSource::Stdin);
+    assert_eq!(
+        builder.config_source(),
+        &torlane::low_level::TorConfigSource::Stdin
+    );
 }
 
 #[test]
 fn pool_builder_torrc_file_switches_to_file_config_source() {
     let torrc = std::env::temp_dir().join("torlane-pool-builder.torrc");
-    let builder = Pool::builder().torrc_file(&torrc);
+    let builder = Pool::builder("/tmp/torlane-pool-builder-test").torrc_file(&torrc);
 
     assert_eq!(
         builder.config_source(),
-        &TorConfigSource::File(torrc.clone())
+        &torlane::low_level::TorConfigSource::File(torrc.clone())
     );
-}
-
-#[cfg(unix)]
-#[test]
-fn instance_layout_creates_private_runtime_directories() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let root = std::env::temp_dir().join(format!(
-        "torlane-layout-{}-{}",
-        std::process::id(),
-        unique_nanos()
-    ));
-    let stale_root = root.join("runtime");
-    fs::create_dir_all(&stale_root).unwrap();
-    let stale_port_file = stale_root.join("control.port");
-    fs::write(&stale_port_file, b"stale").unwrap();
-
-    let layout = InstanceLayout::prepare(&root).unwrap();
-
-    assert_eq!(layout.data_dir, root.join("data"));
-    assert_eq!(layout.runtime_dir, root.join("runtime"));
-    assert_eq!(layout.control_port_file, root.join("runtime/control.port"));
-    assert!(!layout.control_port_file.exists());
-
-    for path in [&layout.root, &layout.data_dir, &layout.runtime_dir] {
-        let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
-    }
-
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -259,26 +199,23 @@ fn identity_pool_generates_unique_runtime_credentials() {
     let usernames: HashSet<_> = pool
         .identities()
         .iter()
-        .map(|identity| identity.auth.username.as_ref())
+        .map(|identity| identity.username())
         .collect();
     let passwords: HashSet<_> = pool
         .identities()
         .iter()
-        .map(|identity| identity.auth.password.as_ref())
+        .map(|identity| identity.expose_password())
         .collect();
 
     assert_eq!(usernames.len(), 64);
     assert_eq!(passwords.len(), 64);
 
     for (index, identity) in pool.identities().iter().enumerate() {
-        assert_eq!(identity.id, index as u64);
-        assert_eq!(identity.proxy_addr, addr);
-        assert_eq!(
-            identity.auth.username.as_ref(),
-            format!("worker-{index:06}")
-        );
-        assert!(!identity.auth.password.is_empty());
-        assert_ne!(identity.auth.password, identity.auth.username);
+        assert_eq!(identity.id(), index as u64);
+        assert_eq!(identity.proxy_addr(), addr);
+        assert_eq!(identity.username(), format!("worker-{index:06}"));
+        assert!(!identity.expose_password().is_empty());
+        assert_ne!(identity.expose_password(), identity.username());
     }
 }
 
@@ -583,12 +520,4 @@ fn unique_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default()
-}
-
-fn count_rendered_options(rendered: &str, option: &str) -> usize {
-    let prefix = format!("{option} ");
-    rendered
-        .lines()
-        .filter(|line| line.starts_with(&prefix))
-        .count()
 }
